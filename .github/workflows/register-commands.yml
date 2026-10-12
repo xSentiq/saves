@@ -1,0 +1,19 @@
+name: Register Discord commands
+
+# Run this once from the Actions tab after adding the repo secrets
+# DISCORD_APP_ID and DISCORD_BOT_TOKEN.
+on:
+  workflow_dispatch:
+
+jobs:
+  register:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: node scripts/register-commands.mjs
+        env:
+          DISCORD_APP_ID: ${{ secrets.DISCORD_APP_ID }}
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}

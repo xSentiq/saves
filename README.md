@@ -1,0 +1,73 @@
+# 🗃️ Peak Vault
+
+A private stash for everything good we send each other on Discord, like images, videos, memes, YouTube links, and random files, rated by both of us on a passcode-locked site.
+
+```
+Discord DM ──right-click → Apps → "Save to Vault"──▶ vault-discord (Supabase Edge Function)
+                                                      │ downloads attachments, reads links/YouTube
+                                                      ▼
+                                   Supabase: vault_items + vault_ratings + private "vault" bucket
+                                                      ▲
+         GitHub Pages site (site/) ──passcode──▶ vault-api (Supabase Edge Function)
+```
+
+* **Saving:** this is a *user-installed* Discord app, so it works in DMs. Right-click any message, choose **Apps → Save to Vault**, and it saves every attachment (re-uploaded, since Discord links expire), every link, and every YouTube video. Forwarded messages work too. Click once and everything after that is automatic.
+* **Why not fully automatic in DMs?** Discord doesn't let bots read DMs between two users. The only way would be a selfbot on your own token, which breaks Discord's ToS and gets accounts banned.
+* **The site:** a static page on GitHub Pages. Nothing is readable without the passcode. The database has RLS on with no public policies, the bucket is private, and files are served through short-lived signed URLs. Wrong passcodes are rate-limited (8 per 15 minutes per IP).
+* **Ratings:** each of us gives 1–5★ and the site shows both plus the average. You can sort by newest, top rated, not rated by me yet, or biggest disagreement.
+
+## Repo layout
+
+| Path | What |
+|---|---|
+| `site/` | The website (plain HTML/JS, no build step) |
+| `supabase/functions/vault-discord/` | Discord interactions endpoint ("Save to Vault", `/vault`) |
+| `supabase/functions/vault-api/` | Passcode login, list, rate, note, remove |
+| `supabase/migrations/` | Tables + private storage bucket |
+| `scripts/register-commands.mjs` | Registers the Discord commands |
+| `.github/workflows/` | Pages deploy, command registration, optional Supabase deploy |
+
+The backend is already deployed to Supabase project `pllihkdrfnvriexwbdst`.
+
+## Setup (one time, ~10 minutes)
+
+### 1. Discord app
+1. Go to <https://discord.com/developers/applications>, click **New Application**, and name it something like *Peak Vault*.
+2. On **General Information**, copy the **Application ID** and the **Public Key**.
+3. On **Installation**, tick **User Install**. Set the install link to *Discord Provided Link* and add the `applications.commands` scope under User Install.
+4. On **Bot**, click **Reset Token** and copy the bot token. It's only used once, to register the commands. Never put it in the code.
+
+### 2. Supabase secrets
+In Supabase, open the project, then **Edge Functions → Secrets**, and add:
+
+| Name | Value |
+|---|---|
+| `VAULT_PASSCODE` | the passcode only we know (make it long) |
+| `DISCORD_PUBLIC_KEY` | the Public Key from step 1 |
+| `ALLOWED_DISCORD_USER_IDS` | our two Discord user IDs, comma-separated |
+| `VAULT_NAMES` | `Sentiq,furfyl` (names on the login screen; 1st = 🐱, 2nd = 🐶) |
+| `VAULT_SITE_URL` | the GitHub Pages URL from step 4 (for `/vault`) |
+
+Don't know your Discord ID? Leave `ALLOWED_DISCORD_USER_IDS` empty for now. The first time you use **Save to Vault**, the bot replies with your ID.
+
+### 3. Point Discord at the endpoint
+In the Developer Portal, go to **General Information → Interactions Endpoint URL** and enter:
+
+```
+https://pllihkdrfnvriexwbdst.supabase.co/functions/v1/vault-discord
+```
+
+Save. Discord sends a test ping, and it only saves once `DISCORD_PUBLIC_KEY` is set correctly.
+
+### 4. GitHub
+1. Under **Settings → Pages → Source**, choose **GitHub Actions**. Every push to `site/` then redeploys the site to `https://<user>.github.io/<repo>/`.
+2. Under **Settings → Secrets and variables → Actions**, add `DISCORD_APP_ID` and `DISCORD_BOT_TOKEN`.
+3. Under **Actions → Register Discord commands → Run workflow**, run it once.
+
+### 5. Install it (both of us)
+Open the install link from **Installation** in the Developer Portal and choose **Add to My Apps**. After that, right-click a message in your DM, then go to **Apps → Save to Vault**.
+
+## Changing things
+* **New passcode:** change `VAULT_PASSCODE` in Supabase. Everyone gets logged out.
+* **Backend changes:** edit `supabase/` and run the *Deploy Supabase* workflow (needs `SUPABASE_ACCESS_TOKEN` and `SUPABASE_DB_PASSWORD` secrets), or use `supabase functions deploy` locally.
+* **Storage:** Supabase free plan = 1 GB total and 50 MB max per file. Anything bigger is saved as info only.

@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Peak Vault</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🗃️</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #14110f;
+    --panel: #1e1a17;
+    --panel-2: #27221e;
+    --line: #3a332d;
+    --ink: #f3ece4;
+    --muted: #a79c90;
+    --cat: #ff9f5a;      /* orange cat */
+    --dog: #7cc4ff;      /* good boy blue */
+    --gold: #ffd166;
+    --danger: #ff6b6b;
+    --radius: 14px;
+    --display: "Bricolage Grotesque", system-ui, sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--display); }
+  body { min-height: 100vh; background:
+    radial-gradient(900px 500px at 10% -10%, #ff9f5a14, transparent 60%),
+    radial-gradient(900px 500px at 110% 10%, #7cc4ff12, transparent 60%), var(--bg); }
+  button, input, select { font: inherit; color: inherit; }
+  a { color: inherit; }
+  .hidden { display: none !important; }
+
+  /* ---------- gate ---------- */
+  #gate { min-height: 100vh; display: grid; place-items: center; padding: 24px 16px; }
+  .gate-card { width: min(420px, 100%); background: var(--panel); border: 1px solid var(--line);
+    border-radius: 22px; padding: 32px 26px; box-shadow: 0 30px 80px #0008; }
+  .gate-card h1 { font-size: 44px; line-height: .95; margin: 0 0 6px; font-weight: 800; letter-spacing: -.02em; }
+  .gate-card h1 span { color: var(--gold); }
+  .gate-card p { color: var(--muted); margin: 0 0 24px; }
+  .who { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
+  .who button { background: var(--panel-2); border: 2px solid var(--line); border-radius: 14px;
+    padding: 14px 10px; cursor: pointer; font-weight: 600; transition: .15s; }
+  .who button .em { display: block; font-size: 30px; margin-bottom: 4px; }
+  .who button[aria-pressed="true"] { border-color: var(--gold); background: #ffd16614; }
+  .pass { width: 100%; padding: 14px 16px; border-radius: 12px; border: 2px solid var(--line);
+    background: #0e0c0b; font-family: var(--mono); font-size: 18px; letter-spacing: .15em; outline: none; }
+  .pass:focus { border-color: var(--gold); }
+  .go { width: 100%; margin-top: 12px; padding: 14px; border-radius: 12px; border: 0; cursor: pointer;
+    background: var(--gold); color: #1a1408; font-weight: 800; font-size: 17px; }
+  .go:disabled { opacity: .5; cursor: wait; }
+  .err { color: var(--danger); min-height: 1.4em; margin-top: 10px; font-size: 14px; }
+  .shake { animation: shake .35s; }
+  @keyframes shake { 25% { transform: translateX(-8px) } 75% { transform: translateX(8px) } }
+
+  /* ---------- app ---------- */
+  header { position: sticky; top: 0; z-index: 5; backdrop-filter: blur(14px);
+    background: #14110fd9; border-bottom: 1px solid var(--line); }
+  .bar { max-width: 1280px; margin: 0 auto; padding: 14px 16px; display: flex; gap: 12px;
+    align-items: center; flex-wrap: wrap; }
+  .logo { font-weight: 800; font-size: 22px; letter-spacing: -.02em; margin-right: auto; }
+  .logo span { color: var(--gold); }
+  .me { font-size: 14px; color: var(--muted); }
+  .me b { color: var(--ink); }
+  .ghost { background: none; border: 1px solid var(--line); border-radius: 10px; padding: 7px 12px;
+    cursor: pointer; color: var(--muted); }
+  .ghost:hover { color: var(--ink); border-color: var(--muted); }
+  .tools { max-width: 1280px; margin: 0 auto; padding: 0 16px 14px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .chip { background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 7px 14px;
+    cursor: pointer; font-size: 14px; white-space: nowrap; }
+  .chip[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  .chip .n { opacity: .55; margin-left: 4px; font-family: var(--mono); font-size: 12px; }
+  .search { flex: 1 1 180px; min-width: 0; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 999px; padding: 7px 14px; outline: none; }
+  select.chip { appearance: none; padding-right: 14px; }
+
+  main { max-width: 1280px; margin: 0 auto; padding: 18px 16px 80px; }
+  .stats { display: flex; gap: 18px; flex-wrap: wrap; color: var(--muted); font-size: 14px; margin-bottom: 16px; }
+  .stats b { color: var(--ink); font-family: var(--mono); }
+  .grid { columns: 300px; column-gap: 16px; }
+  .card { break-inside: avoid; margin-bottom: 16px; background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--radius); overflow: hidden; }
+  .media { position: relative; background: #0c0a09; display: block; width: 100%; }
+  .media img, .media video { display: block; width: 100%; height: auto; max-height: 520px; object-fit: contain; }
+  .media.click { cursor: zoom-in; }
+  .yt { position: relative; aspect-ratio: 16/9; cursor: pointer; }
+  .yt img { width: 100%; height: 100%; object-fit: cover; }
+  .yt::after { content: "▶"; position: absolute; inset: 0; margin: auto; width: 64px; height: 44px;
+    display: grid; place-items: center; background: #ff0000e6; border-radius: 12px; color: #fff; font-size: 20px; }
+  .yt iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+  .link-thumb img { width: 100%; max-height: 220px; object-fit: cover; display: block; }
+  .filebox { padding: 26px 16px; display: flex; gap: 12px; align-items: center; background: var(--panel-2); }
+  .filebox .ic { font-size: 34px; }
+  .filebox .fn { font-family: var(--mono); font-size: 13px; word-break: break-all; }
+  .quote { padding: 20px 18px 4px; font-size: 19px; line-height: 1.35; font-weight: 600; }
+  .quote::before { content: "“"; color: var(--gold); font-size: 40px; line-height: 0; vertical-align: -.35em; margin-right: 2px; }
+  audio { width: 100%; display: block; padding: 12px; }
+  .body { padding: 12px 14px 14px; }
+  .title { font-weight: 600; margin: 0 0 4px; line-height: 1.25; word-break: break-word; }
+  .title a { text-decoration: none; } .title a:hover { text-decoration: underline; }
+  .site { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .msg { color: var(--muted); font-size: 14px; margin: 6px 0 0; white-space: pre-wrap; word-break: break-word;
+    display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+  .note { margin-top: 8px; font-size: 14px; background: #ffd16612; border-left: 3px solid var(--gold);
+    padding: 6px 10px; border-radius: 6px; white-space: pre-wrap; }
+  .meta { display: flex; justify-content: space-between; gap: 8px; margin-top: 10px; font-size: 12px; color: var(--muted); }
+  .rates { margin-top: 10px; border-top: 1px dashed var(--line); padding-top: 10px; display: grid; gap: 6px; }
+  .rate-row { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  .rate-row .nm { width: 64px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .stars { display: flex; gap: 2px; }
+  .stars button { background: none; border: 0; padding: 0 1px; font-size: 20px; line-height: 1; cursor: pointer;
+    color: var(--line); transition: transform .1s; }
+  .stars button.on { color: var(--gold); }
+  .stars button:hover { transform: scale(1.2); }
+  .stars.ro button { cursor: default; } .stars.ro button:hover { transform: none; }
+  .stars.ro button.on { color: var(--muted); }
+  .avg { margin-left: auto; font-family: var(--mono); color: var(--gold); }
+  .actions { display: flex; gap: 6px; margin-top: 10px; }
+  .actions button, .actions a { font-size: 12px; background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: 8px; padding: 4px 9px; cursor: pointer; color: var(--muted); text-decoration: none; }
+  .actions button:hover, .actions a:hover { color: var(--ink); }
+  .tag { position: absolute; top: 8px; left: 8px; background: #000a; border-radius: 999px; padding: 3px 9px;
+    font-size: 12px; font-family: var(--mono); }
+  .empty { text-align: center; color: var(--muted); padding: 80px 20px; }
+  .empty .big { font-size: 56px; }
+  .loading { text-align: center; color: var(--muted); padding: 60px; }
+
+  #lightbox { position: fixed; inset: 0; background: #000e; z-index: 50; display: grid; place-items: center;
+    padding: 16px; cursor: zoom-out; }
+  #lightbox img { max-width: 100%; max-height: 100%; border-radius: 8px; }
+
+  .cat { color: var(--cat); } .dog { color: var(--dog); }
+  @media (max-width: 520px) { .grid { columns: 1; } .gate-card h1 { font-size: 36px; } }
+</style>
+</head>
+<body>
+
+<!-- ========== passcode gate ========== -->
+<section id="gate" class="hidden">
+  <form class="gate-card" id="gateForm" autocomplete="off">
+    <h1>Peak<br><span>Vault</span></h1>
+    <p>Members only. Mrrp. Woof.</p>
+    <div class="who" id="who"></div>
+    <input class="pass" id="pass" type="password" placeholder="passcode" aria-label="Passcode" autocomplete="current-password">
+    <button class="go" id="goBtn" type="submit">Open the vault</button>
+    <div class="err" id="gateErr"></div>
+  </form>
+</section>
+
+<!-- ========== vault ========== -->
+<section id="app" class="hidden">
+  <header>
+    <div class="bar">
+      <div class="logo">Peak <span>Vault</span></div>
+      <div class="me">rating as <b id="meName"></b></div>
+      <button class="ghost" id="refreshBtn" title="Reload">↻</button>
+      <button class="ghost" id="logoutBtn">Lock</button>
+    </div>
+    <div class="tools">
+      <div id="kinds" style="display:contents"></div>
+      <select class="chip" id="sort" aria-label="Sort">
+        <option value="new">Newest</option>
+        <option value="old">Oldest</option>
+        <option value="top">Top rated</option>
+        <option value="unrated">Not rated by me</option>
+        <option value="fight">Biggest disagreement</option>
+      </select>
+      <input class="search" id="q" placeholder="search…" aria-label="Search">
+    </div>
+  </header>
+  <main>
+    <div class="stats" id="stats"></div>
+    <div id="list"><div class="loading">opening the vault…</div></div>
+  </main>
+</section>
+
+<div id="lightbox" class="hidden"><img alt=""></div>
+
+<script src="config.js"></script>
+<script>
+(() => {
+  const API = window.VAULT_API;
+  const $ = (id) => document.getElementById(id);
+  const store = {
+    get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+    del(k) { try { localStorage.removeItem(k); } catch {} },
+  };
+
+  let token = store.get("vault_token");
+  let me = store.get("vault_name");
+  let names = [];
+  let items = [];
+  let kind = "all";
+  let pickedName = me;
+
+  const call = async (action, extra = {}) => {
+    const res = await fetch(API, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action, token, ...extra }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 401 && action !== "login") { lock(); throw new Error("locked"); }
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return data;
+  };
+
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const safeUrl = (u) => { try { const x = new URL(u); return /^https?:$/.test(x.protocol) ? x.href : ""; } catch { return ""; } };
+  const animal = (n) => names.indexOf(n) === 0 ? "🐱" : names.indexOf(n) === 1 ? "🐶" : "⭐";
+  const tone = (n) => names.indexOf(n) === 0 ? "cat" : names.indexOf(n) === 1 ? "dog" : "";
+  const ytId = (u) => {
+    try { const x = new URL(u); const h = x.hostname.replace(/^www\.|^m\./, "");
+      if (h === "youtu.be") return x.pathname.slice(1).split("/")[0];
+      if (x.pathname === "/watch") return x.searchParams.get("v");
+      const m = x.pathname.match(/^\/(shorts|embed|live)\/([\w-]{6,})/); return m ? m[2] : null;
+    } catch { return null; }
+  };
+  const when = (d) => d ? new Date(d).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "2-digit" }) : "";
+  const size = (b) => !b ? "" : b > 1048576 ? (b / 1048576).toFixed(1) + " MB" : Math.ceil(b / 1024) + " KB";
+  const avg = (it) => { const v = Object.values(it.ratings); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
+
+  // ---------- gate ----------
+  async function showGate(msg = "") {
+    $("app").classList.add("hidden");
+    $("gate").classList.remove("hidden");
+    $("gateErr").textContent = msg;
+    if (!names.length) {
+      try { names = (await call("config")).names; } catch { names = ["Sentiq", "furfyl"]; }
+    }
+    $("who").innerHTML = names.slice(0, 4).map((n) =>
+      `<button type="button" data-n="${esc(n)}" aria-pressed="${n === pickedName}"><span class="em">${animal(n)}</span>${esc(n)}</button>`).join("");
+    $("who").querySelectorAll("button").forEach((b) => b.onclick = () => {
+      pickedName = b.dataset.n;
+      $("who").querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", x === b));
+      $("pass").focus();
+    });
+    $("pass").focus();
+  }
+
+  $("gateForm").onsubmit = async (e) => {
+    e.preventDefault();
+    if (!pickedName) { $("gateErr").textContent = "Pick who you are first."; return; }
+    $("goBtn").disabled = true; $("gateErr").textContent = "";
+    try {
+      const r = await call("login", { passcode: $("pass").value, name: pickedName });
+      token = r.token; me = r.name;
+      store.set("vault_token", token); store.set("vault_name", me);
+      $("pass").value = "";
+      openVault();
+    } catch (err) {
+      $("gateErr").textContent = err.message;
+      $("gateForm").classList.remove("shake"); void $("gateForm").offsetWidth; $("gateForm").classList.add("shake");
+    } finally { $("goBtn").disabled = false; }
+  };
+
+  function lock() {
+    token = null; store.del("vault_token");
+    showGate();
+  }
+  $("logoutBtn").onclick = lock;
+
+  // ---------- vault ----------
+  async function openVault() {
+    $("gate").classList.add("hidden");
+    $("app").classList.remove("hidden");
+    $("meName").innerHTML = `<span class="${tone(me)}">${esc(me)}</span>`;
+    await load();
+  }
+
+  async function load() {
+    $("list").innerHTML = `<div class="loading">opening the vault…</div>`;
+    try {
+      const r = await call("list");
+      items = r.items; names = r.names; me = r.you;
+      $("meName").innerHTML = `<span class="${tone(me)}">${esc(me)}</span>`;
+      render();
+    } catch (err) {
+      if (err.message !== "locked") $("list").innerHTML = `<div class="empty">Couldn't load: ${esc(err.message)}</div>`;
+    }
+  }
+  $("refreshBtn").onclick = load;
+
+  const KINDS = [["all", "All"], ["image", "Images"], ["video", "Videos"], ["youtube", "YouTube"],
+                 ["link", "Links"], ["audio", "Audio"], ["file", "Files"], ["text", "Quotes"]];
+
+  function render() {
+    const counts = {}; items.forEach((i) => counts[i.kind] = (counts[i.kind] || 0) + 1);
+    $("kinds").innerHTML = KINDS.filter(([k]) => k === "all" || counts[k]).map(([k, label]) =>
+      `<button class="chip" data-k="${k}" aria-pressed="${k === kind}">${label}<span class="n">${k === "all" ? items.length : counts[k]}</span></button>`).join("");
+    $("kinds").querySelectorAll("button").forEach((b) => b.onclick = () => { kind = b.dataset.k; render(); });
+
+    const q = $("q").value.trim().toLowerCase();
+    let list = items.filter((i) => kind === "all" || i.kind === kind);
+    if (q) list = list.filter((i) => [i.title, i.message_text, i.file_name, i.site_name, i.author_name, i.note, i.url]
+      .some((v) => v && String(v).toLowerCase().includes(q)));
+
+    const s = $("sort").value;
+    const t = (i) => new Date(i.posted_at || i.created_at).getTime();
+    if (s === "new") list.sort((a, b) => t(b) - t(a));
+    if (s === "old") list.sort((a, b) => t(a) - t(b));
+    if (s === "top") list.sort((a, b) => (avg(b) ?? -1) - (avg(a) ?? -1));
+    if (s === "unrated") list = list.filter((i) => !i.ratings[me]);
+    if (s === "fight") {
+      const gap = (i) => { const v = Object.values(i.ratings); return v.length < 2 ? -1 : Math.max(...v) - Math.min(...v); };
+      list = list.filter((i) => gap(i) > 0).sort((a, b) => gap(b) - gap(a));
+    }
+
+    // stats
+    const rated = items.filter((i) => i.ratings[me]).length;
+    const fives = items.filter((i) => Object.values(i.ratings).includes(5)).length;
+    const byWho = {}; items.forEach((i) => { const w = i.author_name || "?"; byWho[w] = (byWho[w] || 0) + 1; });
+    const top = Object.entries(byWho).sort((a, b) => b[1] - a[1])[0];
+    $("stats").innerHTML = items.length ? `
+      <span><b>${items.length}</b> saved</span>
+      <span><b>${rated}</b> rated by you</span>
+      <span><b>${fives}</b> got a 5★</span>
+      ${top ? `<span>top sender: <b>${esc(top[0])}</b></span>` : ""}` : "";
+
+    if (!items.length) {
+      $("list").innerHTML = `<div class="empty"><div class="big">🗃️</div>
+        <p>The vault is empty.</p><p>In Discord: right-click a message → <b>Apps</b> → <b>Save to Vault</b>.</p></div>`;
+      return;
+    }
+    if (!list.length) { $("list").innerHTML = `<div class="empty">Nothing matches.</div>`; return; }
+    $("list").innerHTML = `<div class="grid">${list.map(card).join("")}</div>`;
+    wire();
+  }
+  $("sort").onchange = render;
+  $("q").oninput = render;
+
+  function media(i) {
+    const f = safeUrl(i.file_url);
+    if (i.kind === "image" && f) return `<div class="media click" data-zoom="${esc(f)}"><img loading="lazy" src="${esc(f)}" alt="${esc(i.file_name)}"></div>`;
+    if (i.kind === "video" && f) return `<div class="media"><video controls preload="metadata" src="${esc(f)}"></video></div>`;
+    if (i.kind === "audio" && f) return `<audio controls preload="none" src="${esc(f)}"></audio>`;
+    if (i.kind === "youtube") {
+      const id = ytId(i.url);
+      if (id) return `<div class="media yt" data-yt="${esc(id)}"><img loading="lazy" src="https://i.ytimg.com/vi/${esc(id)}/hqdefault.jpg" alt=""></div>`;
+    }
+    if (i.kind === "link" && safeUrl(i.thumbnail_url))
+      return `<a class="media link-thumb" href="${esc(safeUrl(i.url))}" target="_blank" rel="noopener noreferrer"><img loading="lazy" src="${esc(safeUrl(i.thumbnail_url))}" alt="" onerror="this.parentNode.remove()"></a>`;
+    if (i.kind === "text") return `<div class="quote">${esc(i.message_text)}</div>`;
+    if (["file", "image", "video", "audio"].includes(i.kind)) {
+      const ic = { image: "🖼️", video: "🎞️", audio: "🎵" }[i.kind] || "📦";
+      return `<div class="filebox"><span class="ic">${ic}</span><div><div class="fn">${esc(i.file_name)}</div>
+        <div class="site">${esc(size(i.size_bytes))}${f ? "" : " · not stored"}</div></div></div>`;
+    }
+    return "";
+  }
+
+  function stars(it, who) {
+    const mine = who === me, val = it.ratings[who] || 0;
+    return `<div class="rate-row"><span class="nm ${tone(who)}">${animal(who)} ${esc(who)}</span>
+      <div class="stars ${mine ? "" : "ro"}" ${mine ? `data-rate="${it.id}"` : ""}>
+        ${[1, 2, 3, 4, 5].map((n) => `<button type="button" data-s="${n}" class="${n <= val ? "on" : ""}" ${mine ? "" : "tabindex=-1"} aria-label="${n} stars">★</button>`).join("")}
+      </div></div>`;
+  }
+
+  function card(i) {
+    const url = safeUrl(i.url);
+    const title = i.kind === "link" || i.kind === "youtube"
+      ? `<p class="title"><a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(i.title || url)}</a></p><div class="site">${esc(i.site_name || "")}</div>`
+      : (i.file_name && i.kind !== "text" ? `<p class="title">${esc(i.file_name)}</p>` : "");
+    const msg = i.kind !== "text" && i.message_text ? `<p class="msg">${esc(i.message_text)}</p>` : "";
+    const a = avg(i);
+    const f = safeUrl(i.file_url);
+    return `<article class="card" data-id="${i.id}">
+      ${media(i)}
+      <div class="body">
+        ${title}${msg}
+        ${i.note ? `<div class="note">${esc(i.note)}</div>` : ""}
+        <div class="meta"><span>from <b class="${tone(i.author_name)}">${esc(i.author_name || "?")}</b></span><span>${esc(when(i.posted_at || i.created_at))}</span></div>
+        <div class="rates">
+          ${names.map((n) => stars(i, n)).join("")}
+          ${a !== null ? `<div class="rate-row"><span class="avg">${a.toFixed(1)} ★</span></div>` : ""}
+        </div>
+        <div class="actions">
+          ${f ? `<a href="${esc(f)}" target="_blank" rel="noopener" download>open</a>` : ""}
+          <button type="button" data-note="${i.id}">${i.note ? "edit note" : "add note"}</button>
+          <button type="button" data-del="${i.id}">remove</button>
+        </div>
+      </div>
+    </article>`;
+  }
+
+  function wire() {
+    document.querySelectorAll("[data-rate]").forEach((box) => {
+      box.querySelectorAll("button").forEach((b) => b.onclick = async () => {
+        const it = items.find((x) => x.id === box.dataset.rate);
+        let s = +b.dataset.s;
+        if (it.ratings[me] === s) s = 0;                 // click same star again = clear
+        const prev = it.ratings[me];
+        if (s) it.ratings[me] = s; else delete it.ratings[me];
+        render();
+        try { await call("rate", { id: it.id, score: s }); }
+        catch (e) { if (prev) it.ratings[me] = prev; else delete it.ratings[me]; render(); alert(e.message); }
+      });
+    });
+    document.querySelectorAll("[data-yt]").forEach((el) => el.onclick = () => {
+      el.innerHTML = `<iframe src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(el.dataset.yt)}?autoplay=1" allow="autoplay; encrypted-media; fullscreen" allowfullscreen></iframe>`;
+      el.onclick = null; el.style.cursor = "default"; el.classList.remove("yt"); el.style.aspectRatio = "16/9";
+    });
+    document.querySelectorAll("[data-zoom]").forEach((el) => el.onclick = () => {
+      $("lightbox").querySelector("img").src = el.dataset.zoom;
+      $("lightbox").classList.remove("hidden");
+    });
+    document.querySelectorAll("[data-note]").forEach((b) => b.onclick = async () => {
+      const it = items.find((x) => x.id === b.dataset.note);
+      const note = prompt("Note for this one:", it.note || "");
+      if (note === null) return;
+      await call("note", { id: it.id, note }); it.note = note || null; render();
+    });
+    document.querySelectorAll("[data-del]").forEach((b) => b.onclick = async () => {
+      const it = items.find((x) => x.id === b.dataset.del);
+      if (!confirm("Remove this from the vault for both of you? The file gets deleted too.")) return;
+      await call("remove", { id: it.id }); items = items.filter((x) => x !== it); render();
+    });
+  }
+
+  $("lightbox").onclick = () => $("lightbox").classList.add("hidden");
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") $("lightbox").classList.add("hidden"); });
+
+  if (token) openVault(); else showGate();
+})();
+</script>
+</body>
+</html>

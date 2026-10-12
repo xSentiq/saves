@@ -1,0 +1,9 @@
+project_id = "pllihkdrfnvriexwbdst"
+
+# Both functions do their own auth (Discord signature / vault passcode token),
+# so Supabase's JWT check is switched off for them.
+[functions.vault-discord]
+verify_jwt = false
+
+[functions.vault-api]
+verify_jwt = false

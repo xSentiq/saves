@@ -11,7 +11,7 @@
 // Env (Supabase → Edge Functions → Secrets):
 //   DISCORD_PUBLIC_KEY        – from the Discord Developer Portal (General Information)
 //   ALLOWED_DISCORD_USER_IDS  – comma-separated Discord user IDs allowed to save
-//   VAULT_SITE_URL            – optional, link shown by /vault (default: GitHub Pages of xSentiq/saves)
+//   VAULT_SITE_URL            – optional, link shown by /vault (default: https://vault.faggot.world/)
 //   SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY are provided by Supabase automatically.
 
 import { createClient } from "npm:@supabase/supabase-js@2";
@@ -21,7 +21,7 @@ declare const EdgeRuntime: { waitUntil(p: Promise<unknown>): void };
 
 const MAX_BYTES = 50 * 1024 * 1024; // Supabase free plan per-file limit
 const BUCKET = "vault";
-const SITE_URL = Deno.env.get("VAULT_SITE_URL") || "https://xsentiq.github.io/saves/";
+const SITE_URL = Deno.env.get("VAULT_SITE_URL") || "https://vault.faggot.world/";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,

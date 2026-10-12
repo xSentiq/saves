@@ -4,7 +4,7 @@ A private stash for everything good we send each other on Discord, like images, 
 
 Saving is done by **mreow** 🐱, our Discord app.
 
-**Site:** <https://xsentiq.github.io/saves/>
+**Site:** <https://vault.faggot.world/>
 
 ```
 Discord DM ──right-click → Apps → mreow → "Save to Vault"──▶ vault-discord (Supabase Edge Function)
@@ -50,7 +50,7 @@ In Supabase, open the project, then **Edge Functions → Secrets**, and add:
 | `DISCORD_PUBLIC_KEY` | the Public Key from step 1 |
 | `ALLOWED_DISCORD_USER_IDS` | our two Discord user IDs, comma-separated |
 | `VAULT_NAMES` | `Sentiq,furfyl` (names on the login screen; 1st = 🐱, 2nd = 🐶) |
-| `VAULT_SITE_URL` | optional, defaults to `https://xsentiq.github.io/saves/` |
+| `VAULT_SITE_URL` | optional, defaults to `https://vault.faggot.world/` |
 
 Don't know your Discord ID? Leave `ALLOWED_DISCORD_USER_IDS` empty for now. The first time you use **Save to Vault**, mreow replies with your ID.
 
@@ -64,12 +64,20 @@ https://pllihkdrfnvriexwbdst.supabase.co/functions/v1/vault-discord
 Save. Discord sends a test ping, and it only saves once `DISCORD_PUBLIC_KEY` is set correctly.
 
 ### 4. GitHub
-1. Under **Settings → Pages → Source**, choose **GitHub Actions**. Every push to `site/` then redeploys the site to <https://xsentiq.github.io/saves/>.
+1. Under **Settings → Pages → Source**, choose **GitHub Actions**. Every push to `site/` then redeploys the site.
 2. Under **Settings → Secrets and variables → Actions**, add `DISCORD_APP_ID` and `DISCORD_BOT_TOKEN`.
 3. Under **Actions → Register Discord commands → Run workflow**, run it once.
 
 ### 5. Install it (both of us)
 Open the install link from **Installation** in the Developer Portal and choose **Add to My Apps**. After that, right-click a message in your DM, then go to **Apps → mreow → Save to Vault**.
+
+## Custom domain (vault.faggot.world)
+
+**DNS (Cloudflare):** add a `CNAME` record, name `vault`, target `xsentiq.github.io`, proxy status **DNS only** (grey cloud).
+
+**GitHub:** go to Settings → Pages → Custom domain, enter `vault.faggot.world`, and click Save. Wait for the DNS check to pass and the certificate to be issued (usually 5–30 minutes), then tick **Enforce HTTPS**.
+
+With Actions-based Pages deploys, the domain lives in the repo settings, not in a `CNAME` file.
 
 ## Changing things
 * **New passcode:** change `VAULT_PASSCODE` in Supabase. Everyone gets logged out.

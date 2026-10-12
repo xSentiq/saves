@@ -1,4 +1,4 @@
-// Discord interactions endpoint for Peak Vault.
+// mreow – the Discord app behind Peak Vault (interactions endpoint).
 //
 // Handles:
 //   • "Save to Vault"  – message context-menu command (right-click a message → Apps).
@@ -11,7 +11,7 @@
 // Env (Supabase → Edge Functions → Secrets):
 //   DISCORD_PUBLIC_KEY        – from the Discord Developer Portal (General Information)
 //   ALLOWED_DISCORD_USER_IDS  – comma-separated Discord user IDs allowed to save
-//   VAULT_SITE_URL            – optional, link shown by /vault
+//   VAULT_SITE_URL            – optional, link shown by /vault (default: GitHub Pages of xSentiq/saves)
 //   SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY are provided by Supabase automatically.
 
 import { createClient } from "npm:@supabase/supabase-js@2";
@@ -21,6 +21,7 @@ declare const EdgeRuntime: { waitUntil(p: Promise<unknown>): void };
 
 const MAX_BYTES = 50 * 1024 * 1024; // Supabase free plan per-file limit
 const BUCKET = "vault";
+const SITE_URL = Deno.env.get("VAULT_SITE_URL") || "https://xsentiq.github.io/saves/";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -215,8 +216,8 @@ Deno.serve(async (req) => {
       type: 4,
       data: {
         flags: EPHEMERAL,
-        content: `🔒 This vault is private. Your Discord ID is \`${user.id}\`. ` +
-          `The owner can add it to ALLOWED_DISCORD_USER_IDS.`,
+        content: `🔒 mreow doesn't know you. Your Discord ID is \`${user.id}\`. ` +
+          `Add it to ALLOWED_DISCORD_USER_IDS to let you save.`,
       },
     });
   }
@@ -224,11 +225,7 @@ Deno.serve(async (req) => {
   const cmd = i.data?.name;
 
   if (cmd === "vault") {
-    const site = Deno.env.get("VAULT_SITE_URL");
-    return json({
-      type: 4,
-      data: { flags: EPHEMERAL, content: site ? `🗃️ The vault: ${site}` : "🗃️ VAULT_SITE_URL isn't set yet." },
-    });
+    return json({ type: 4, data: { flags: EPHEMERAL, content: `🐱 mrrp! the vault: ${SITE_URL}` } });
   }
 
   if (cmd === "Save to Vault" && i.data?.type === 3) {
@@ -243,13 +240,13 @@ Deno.serve(async (req) => {
       try {
         const r = await saveMessage(msg, savedBy, channelId);
         let text = r.saved > 0
-          ? `✅ Saved ${r.saved} thing${r.saved === 1 ? "" : "s"} to the vault.`
-          : r.already > 0 ? "👍 Already in the vault." : "🤷 Nothing saved.";
+          ? `🐱 mreow! saved ${r.saved} thing${r.saved === 1 ? "" : "s"} to the vault.`
+          : r.already > 0 ? "🐱 mrrp? that's already in the vault." : "🐱 …nothing to save in that one.";
         if (r.already > 0 && r.saved > 0) text += ` (${r.already} already there)`;
         if (r.problems.length) text += `\n⚠️ ${r.problems.join("\n⚠️ ")}`;
         await editReply(i, text);
       } catch (e) {
-        await editReply(i, `❌ Something broke: ${(e as Error).message}`);
+        await editReply(i, `🙀 something broke: ${(e as Error).message}`);
       }
     })());
 

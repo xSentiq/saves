@@ -1,4 +1,4 @@
-// Registers the Discord commands for Peak Vault (run once, or after changing commands).
+// Registers mreow's Discord commands for Peak Vault (run once, or after changing commands).
 //
 //   DISCORD_APP_ID=... DISCORD_BOT_TOKEN=... node scripts/register-commands.mjs
 //

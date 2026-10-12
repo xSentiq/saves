@@ -104,8 +104,20 @@
   .site { font-family: var(--mono); font-size: 12px; color: var(--muted); }
   .msg { color: var(--muted); font-size: 14px; margin: 6px 0 0; white-space: pre-wrap; word-break: break-word;
     display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
-  .note { margin-top: 8px; font-size: 14px; background: #ffd16612; border-left: 3px solid var(--gold);
-    padding: 6px 10px; border-radius: 6px; white-space: pre-wrap; }
+  .notes { margin-top: 10px; display: grid; gap: 6px; }
+  .note { font-size: 14px; background: #ffffff08; border-left: 3px solid var(--line);
+    padding: 6px 10px; border-radius: 6px; }
+  .note.shared { background: #ffd16612; border-left-color: var(--gold); }
+  .note.cat { border-left-color: var(--cat); } .note.dog { border-left-color: var(--dog); }
+  .note-head { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted);
+    letter-spacing: .02em; margin-bottom: 2px; }
+  .note-head .lock { opacity: .7; }
+  .note-head .edit { margin-left: auto; background: none; border: 0; color: var(--muted); cursor: pointer;
+    font-size: 11px; padding: 0 2px; text-decoration: underline; }
+  .note-head .edit:hover { color: var(--ink); }
+  .note-text { white-space: pre-wrap; word-break: break-word; color: var(--ink); }
+  .note-empty { color: var(--muted); font-style: italic; opacity: .7; }
+  .note .note-edit { margin-top: 4px; }
   .meta { display: flex; justify-content: space-between; gap: 8px; margin-top: 10px; font-size: 12px; color: var(--muted); }
   .rates { margin-top: 10px; border-top: 1px dashed var(--line); padding-top: 10px; display: grid; gap: 6px; }
   .rate-row { display: flex; align-items: center; gap: 8px; font-size: 13px; }
@@ -312,7 +324,8 @@
 
     const q = $("q").value.trim().toLowerCase();
     let list = items.filter((i) => kind === "all" || i.kind === kind);
-    if (q) list = list.filter((i) => [i.title, i.message_text, i.file_name, i.site_name, i.author_name, i.note, i.url]
+    if (q) list = list.filter((i) => [i.title, i.message_text, i.file_name, i.site_name, i.author_name, i.note, i.url,
+        ...Object.values(i.personal_notes || {}).map((n) => n.note)]
       .some((v) => v && String(v).toLowerCase().includes(q)));
 
     const s = $("sort").value;
@@ -377,6 +390,29 @@
       </div></div>`;
   }
 
+  // One shared note (both edit) + one personal note per person (everyone reads, only the owner edits).
+  function notesBlock(i) {
+    const ago = (d) => d ? ` · ${when(d)}` : "";
+    const shared = `<div class="note shared">
+      <div class="note-head"><span>📝 shared${i.note && i.note_by ? ` · last edit by ${esc(i.note_by)}${ago(i.note_updated_at)}` : ""}</span>
+        <button type="button" class="edit" data-edit-note="shared" data-id="${i.id}">${i.note ? "edit" : "add"}</button></div>
+      ${i.note ? `<div class="note-text">${esc(i.note)}</div>` : `<div class="note-empty">nothing yet</div>`}
+    </div>`;
+    const personal = names.map((n) => {
+      const p = i.personal_notes?.[n];
+      const mine = n === me;
+      if (!p && !mine) return "";   // don't show an empty box for the other person
+      return `<div class="note ${tone(n)}">
+        <div class="note-head"><span>${animal(n)} ${esc(n)}'s note${p ? ago(p.updated_at) : ""}</span>
+          ${mine
+            ? `<button type="button" class="edit" data-edit-note="personal" data-id="${i.id}">${p ? "edit" : "add"}</button>`
+            : `<span class="lock" title="only ${esc(n)} can edit this">🔒</span>`}</div>
+        ${p ? `<div class="note-text">${esc(p.note)}</div>` : `<div class="note-empty">only you can edit this one</div>`}
+      </div>`;
+    }).join("");
+    return `<div class="notes">${shared}${personal}</div>`;
+  }
+
   function card(i) {
     const url = safeUrl(i.url);
     const title = i.kind === "link" || i.kind === "youtube"
@@ -389,7 +425,7 @@
       ${media(i)}
       <div class="body">
         ${title}${msg}
-        ${i.note ? `<div class="note">${esc(i.note)}</div>` : ""}
+        ${notesBlock(i)}
         <div class="meta"><span>from <b class="${tone(i.author_name)}">${esc(i.author_name || "?")}</b></span><span>${esc(when(i.posted_at || i.created_at))}</span></div>
         <div class="rates">
           ${names.map((n) => stars(i, n)).join("")}
@@ -397,7 +433,6 @@
         </div>
         <div class="actions">
           ${f ? `<a href="${esc(f)}" target="_blank" rel="noopener" download>open</a>` : ""}
-          <button type="button" data-note="${i.id}">${i.note ? "edit note" : "add note"}</button>
           <button type="button" data-del="${i.id}">remove</button>
         </div>
       </div>
@@ -425,25 +460,37 @@
       $("lightbox").querySelector("img").src = el.dataset.zoom;
       $("lightbox").classList.remove("hidden");
     });
-    // Note: inline editor (no prompt() – the Claude app browser and some embeds block pop-ups)
-    document.querySelectorAll("[data-note]").forEach((b) => b.onclick = () => {
-      const it = items.find((x) => x.id === b.dataset.note);
-      const card = b.closest(".card");
-      if (card.querySelector(".note-edit")) return;
+    // Notes: inline editor (no prompt() – the Claude app browser and some embeds block pop-ups).
+    // data-edit-note="shared" → the note both can edit; "personal" → only your own (the server enforces this too).
+    document.querySelectorAll("[data-edit-note]").forEach((b) => b.onclick = () => {
+      const scope = b.dataset.editNote;
+      const it = items.find((x) => x.id === b.dataset.id);
+      const wrap = b.closest(".note");
+      if (wrap.querySelector(".note-edit")) return;
+      const current = scope === "shared" ? (it.note || "") : (it.personal_notes?.[me]?.note || "");
       const box = document.createElement("div");
       box.className = "note-edit";
-      box.innerHTML = `<textarea maxlength="500" rows="3" placeholder="write a note…"></textarea>
+      box.innerHTML = `<textarea maxlength="500" rows="3" placeholder="${scope === "shared" ? "shared note, both of you can edit…" : "your note, only you can edit…"}"></textarea>
         <div class="row"><button type="button" class="save">save</button><button type="button" class="cancel">cancel</button></div>`;
       const ta = box.querySelector("textarea");
-      ta.value = it.note || "";
-      b.closest(".actions").after(box);
+      ta.value = current;
+      wrap.querySelector(".note-text, .note-empty")?.classList.add("hidden");
+      wrap.appendChild(box);
       ta.focus();
-      box.querySelector(".cancel").onclick = () => box.remove();
+      box.querySelector(".cancel").onclick = () => render();
       box.querySelector(".save").onclick = async () => {
         const note = ta.value.trim();
         box.querySelector(".save").disabled = true;
-        try { await call("note", { id: it.id, note }); it.note = note || null; render(); toast("note saved"); }
-        catch (e) { box.querySelector(".save").disabled = false; toast(e.message, true); }
+        try {
+          const r = await call("note", { id: it.id, note, scope });
+          if (scope === "shared") {
+            it.note = note || null; it.note_by = note ? me : null; it.note_updated_at = note ? r.updated_at : null;
+          } else {
+            it.personal_notes ||= {};
+            if (note) it.personal_notes[me] = { note, updated_at: r.updated_at }; else delete it.personal_notes[me];
+          }
+          render(); toast("note saved");
+        } catch (e) { box.querySelector(".save").disabled = false; toast(e.message, true); }
       };
     });
     // Remove: click once to arm ("sure?"), click again within 4 s to delete (no confirm() pop-up)

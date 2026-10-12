@@ -5,7 +5,8 @@
 //   login  { passcode, name }   → { token, name }      (token valid 30 days)
 //   list   { token }            → { items }            (files come with 6 h signed URLs)
 //   rate   { token, id, score } → { ok }               (score 1–5, or 0 to clear)
-//   note   { token, id, note }  → { ok }               (edit the little caption)
+//   note   { token, id, note, scope? } → { ok }        (scope "shared" = note both can edit,
+//                                                      "personal" = your own note, read-only for others)
 //   remove { token, id }        → { ok }               (deletes item + file)
 //
 // Env (Supabase → Edge Functions → Secrets):
@@ -123,14 +124,17 @@ Deno.serve(async (req) => {
   if (!who) return json({ error: "locked" }, 401);
 
   if (action === "list") {
-    const [{ data: items, error }, { data: ratings }] = await Promise.all([
+    const [{ data: items, error }, { data: ratings }, { data: pnotes }] = await Promise.all([
       supabase.from("vault_items").select("*").order("created_at", { ascending: false }).limit(2000),
       supabase.from("vault_ratings").select("item_id, rater, score"),
+      supabase.from("vault_personal_notes").select("item_id, author, note, updated_at"),
     ]);
     if (error) return json({ error: error.message }, 500);
 
     const byItem: Record<string, Record<string, number>> = {};
     for (const r of ratings || []) (byItem[r.item_id] ||= {})[r.rater] = r.score;
+    const notesByItem: Record<string, Record<string, { note: string; updated_at: string }>> = {};
+    for (const n of pnotes || []) (notesByItem[n.item_id] ||= {})[n.author] = { note: n.note, updated_at: n.updated_at };
 
     const paths = (items || []).map((i) => i.storage_path).filter(Boolean) as string[];
     const urls: Record<string, string> = {};
@@ -146,6 +150,7 @@ Deno.serve(async (req) => {
         ...i,
         file_url: i.storage_path ? urls[i.storage_path] ?? null : null,
         ratings: byItem[i.id] || {},
+        personal_notes: notesByItem[i.id] || {},
       })),
     });
   }
@@ -166,9 +171,24 @@ Deno.serve(async (req) => {
   }
 
   if (action === "note") {
-    const note = String(body.note ?? "").slice(0, 500) || null;
-    const { error } = await supabase.from("vault_items").update({ note }).eq("id", id);
-    return error ? json({ error: error.message }, 500) : json({ ok: true });
+    // scope "shared" (default): the one note both people can edit.
+    // scope "personal": the logged-in person's own note. The author is always taken from the
+    // session token, never from the request, so nobody can edit someone else's personal note.
+    const note = String(body.note ?? "").trim().slice(0, 500);
+    const now = new Date().toISOString();
+
+    if (body.scope === "personal") {
+      const { error } = note
+        ? await supabase.from("vault_personal_notes")
+          .upsert({ item_id: id, author: who, note, updated_at: now })
+        : await supabase.from("vault_personal_notes").delete().eq("item_id", id).eq("author", who);
+      return error ? json({ error: error.message }, 500) : json({ ok: true, author: who, updated_at: now });
+    }
+
+    const { error } = await supabase.from("vault_items")
+      .update({ note: note || null, note_by: note ? who : null, note_updated_at: note ? now : null })
+      .eq("id", id);
+    return error ? json({ error: error.message }, 500) : json({ ok: true, note_by: who, updated_at: now });
   }
 
   if (action === "remove") {

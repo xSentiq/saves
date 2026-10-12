@@ -122,6 +122,21 @@
   .actions button, .actions a { font-size: 12px; background: var(--panel-2); border: 1px solid var(--line);
     border-radius: 8px; padding: 4px 9px; cursor: pointer; color: var(--muted); text-decoration: none; }
   .actions button:hover, .actions a:hover { color: var(--ink); }
+  .actions button.danger { background: #ff6b6b22; border-color: var(--danger); color: var(--danger); }
+  .actions button:disabled { opacity: .6; cursor: wait; }
+  .note-edit { margin-top: 8px; display: grid; gap: 6px; }
+  .note-edit textarea { width: 100%; resize: vertical; background: #0e0c0b; border: 1px solid var(--line);
+    border-radius: 8px; padding: 8px; color: var(--ink); font: inherit; font-size: 14px; outline: none; }
+  .note-edit textarea:focus { border-color: var(--gold); }
+  .note-edit .row { display: flex; gap: 6px; }
+  .note-edit button { font-size: 12px; border-radius: 8px; padding: 4px 10px; cursor: pointer;
+    border: 1px solid var(--line); background: var(--panel-2); color: var(--muted); }
+  .note-edit .save { background: var(--gold); color: #1a1408; border-color: var(--gold); font-weight: 600; }
+  .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 60;
+    background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: 999px; font-size: 14px;
+    font-weight: 600; box-shadow: 0 10px 30px #0008; animation: pop .2s ease-out; }
+  .toast.bad { background: var(--danger); color: #fff; }
+  @keyframes pop { from { opacity: 0; transform: translate(-50%, 8px); } }
   .tag { position: absolute; top: 8px; left: 8px; background: #000a; border-radius: 999px; padding: 3px 9px;
     font-size: 12px; font-family: var(--mono); }
   .empty { text-align: center; color: var(--muted); padding: 80px 20px; }
@@ -399,7 +414,7 @@
         if (s) it.ratings[me] = s; else delete it.ratings[me];
         render();
         try { await call("rate", { id: it.id, score: s }); }
-        catch (e) { if (prev) it.ratings[me] = prev; else delete it.ratings[me]; render(); alert(e.message); }
+        catch (e) { if (prev) it.ratings[me] = prev; else delete it.ratings[me]; render(); toast(e.message, true); }
       });
     });
     document.querySelectorAll("[data-yt]").forEach((el) => el.onclick = () => {
@@ -410,17 +425,54 @@
       $("lightbox").querySelector("img").src = el.dataset.zoom;
       $("lightbox").classList.remove("hidden");
     });
-    document.querySelectorAll("[data-note]").forEach((b) => b.onclick = async () => {
+    // Note: inline editor (no prompt() – the Claude app browser and some embeds block pop-ups)
+    document.querySelectorAll("[data-note]").forEach((b) => b.onclick = () => {
       const it = items.find((x) => x.id === b.dataset.note);
-      const note = prompt("Note for this one:", it.note || "");
-      if (note === null) return;
-      await call("note", { id: it.id, note }); it.note = note || null; render();
+      const card = b.closest(".card");
+      if (card.querySelector(".note-edit")) return;
+      const box = document.createElement("div");
+      box.className = "note-edit";
+      box.innerHTML = `<textarea maxlength="500" rows="3" placeholder="write a note…"></textarea>
+        <div class="row"><button type="button" class="save">save</button><button type="button" class="cancel">cancel</button></div>`;
+      const ta = box.querySelector("textarea");
+      ta.value = it.note || "";
+      b.closest(".actions").after(box);
+      ta.focus();
+      box.querySelector(".cancel").onclick = () => box.remove();
+      box.querySelector(".save").onclick = async () => {
+        const note = ta.value.trim();
+        box.querySelector(".save").disabled = true;
+        try { await call("note", { id: it.id, note }); it.note = note || null; render(); toast("note saved"); }
+        catch (e) { box.querySelector(".save").disabled = false; toast(e.message, true); }
+      };
     });
+    // Remove: click once to arm ("sure?"), click again within 4 s to delete (no confirm() pop-up)
     document.querySelectorAll("[data-del]").forEach((b) => b.onclick = async () => {
       const it = items.find((x) => x.id === b.dataset.del);
-      if (!confirm("Remove this from the vault for both of you? The file gets deleted too.")) return;
-      await call("remove", { id: it.id }); items = items.filter((x) => x !== it); render();
+      if (b.dataset.armed !== "1") {
+        b.dataset.armed = "1"; b.classList.add("danger"); b.textContent = "sure? click again";
+        clearTimeout(b._t);
+        b._t = setTimeout(() => { b.dataset.armed = ""; b.classList.remove("danger"); b.textContent = "remove"; }, 4000);
+        return;
+      }
+      clearTimeout(b._t);
+      b.disabled = true; b.textContent = "removing…";
+      try {
+        await call("remove", { id: it.id });
+        items = items.filter((x) => x !== it); render(); toast("removed");
+      } catch (e) {
+        b.disabled = false; b.dataset.armed = ""; b.classList.remove("danger"); b.textContent = "remove";
+        toast(e.message, true);
+      }
     });
+  }
+
+  function toast(text, bad = false) {
+    const t = document.createElement("div");
+    t.className = "toast" + (bad ? " bad" : "");
+    t.textContent = text;
+    document.body.appendChild(t);
+    setTimeout(() => t.remove(), 2600);
   }
 
   $("lightbox").onclick = () => $("lightbox").classList.add("hidden");

@@ -286,6 +286,7 @@
         <option value="unrated">Not rated by me</option>
         <option value="fight">Biggest disagreement</option>
         <option value="tag">By tag (A–Z)</option>
+        <option value="untagged">Untagged</option>
       </select>
       <input class="search" id="q" placeholder="search…" aria-label="Search">
     </div>
@@ -476,6 +477,7 @@
       const gap = (i) => { const v = Object.values(i.ratings); return v.length < 2 ? -1 : Math.max(...v) - Math.min(...v); };
       list = list.filter((i) => gap(i) > 0).sort((a, b) => gap(b) - gap(a));
     }
+    if (s === "untagged") list = list.filter((i) => !(i.tags || []).length).sort((a, b) => t(b) - t(a));
     if (s === "tag") {
       // alphabetical by first tag, untagged last, newest first within the same tag
       const first = (i) => [...(i.tags || [])].sort()[0] || "￿";

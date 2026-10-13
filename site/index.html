@@ -178,6 +178,20 @@
     display: grid; place-items: center; background: #ff0000e6; border-radius: 12px; color: #fff; font-size: 20px; }
   .yt iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
   .link-thumb img { width: 100%; max-height: 220px; object-fit: cover; display: block; }
+  /* text files */
+  .textprev { position: relative; background: var(--input); padding: 10px 12px 0; cursor: pointer; max-height: 210px; overflow: hidden; }
+  .textprev:hover .textprev-head span:first-child { color: var(--gold-text); }
+  .textprev-head { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; font-family: var(--mono); margin-bottom: 6px; }
+  .textprev pre { margin: 0; font-family: var(--mono); font-size: 12px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; color: var(--ink); }
+  .textprev-fade { position: absolute; left: 0; right: 0; bottom: 0; height: 48px; background: linear-gradient(transparent, var(--input)); }
+  .reader-card { width: min(900px, 100%); display: flex; flex-direction: column; max-height: calc(100vh - 32px); }
+  .reader-card h2 { font-family: var(--mono); font-size: 16px; padding-right: 30px; word-break: break-all; }
+  .reader-tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+  .reader-tools .site { margin-right: auto; }
+  .reader-tools .ghost { text-decoration: none; font-size: 13px; padding: 5px 10px; }
+  #readerText { flex: 1; min-height: 120px; overflow: auto; margin: 0; padding: 12px 14px; background: var(--input);
+    border: 1px solid var(--line); border-radius: 10px; font-family: var(--mono); font-size: 13px; line-height: 1.5; color: var(--ink); tab-size: 4; }
+  #readerText.wrap { white-space: pre-wrap; word-break: break-word; }
   .filebox { padding: 26px 16px; display: flex; gap: 12px; align-items: center; background: var(--panel-2); }
   .filebox .ic { font-size: 34px; }
   .filebox .fn { font-family: var(--mono); font-size: 13px; word-break: break-all; }
@@ -302,6 +316,21 @@
 
 <div id="lightbox" class="hidden"><img alt=""></div>
 <datalist id="tagList"></datalist>
+
+<!-- ========== text file reader ========== -->
+<div id="reader" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="readerTitle">
+  <div class="modal-card reader-card">
+    <button class="modal-x" id="readerClose" aria-label="Close">✕</button>
+    <h2 id="readerTitle">file</h2>
+    <div class="reader-tools">
+      <span class="site" id="readerInfo"></span>
+      <button type="button" class="ghost" id="readerWrap">wrap: on</button>
+      <button type="button" class="ghost" id="readerCopy">copy</button>
+      <a class="ghost" id="readerDl" href="#" target="_blank" rel="noopener">download</a>
+    </div>
+    <pre id="readerText" class="wrap"></pre>
+  </div>
+</div>
 
 <!-- ========== bulk import ========== -->
 <div id="importer" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="impTitle">
@@ -520,6 +549,11 @@
     if (i.kind === "link" && safeUrl(i.thumbnail_url))
       return `<a class="media link-thumb" href="${esc(safeUrl(i.url))}" target="_blank" rel="noopener noreferrer"><img loading="lazy" src="${esc(safeUrl(i.thumbnail_url))}" alt="" onerror="this.parentNode.remove()"></a>`;
     if (i.kind === "text") return `<div class="quote">${esc(i.message_text)}</div>`;
+    if (isTextFile(i) && f) {
+      return `<div class="textprev" data-text-id="${i.id}" role="button" tabindex="0" title="open ${esc(i.file_name)}">
+        <div class="textprev-head"><span>📄 ${esc(i.file_name)}</span><span class="site">${esc(size(i.size_bytes))}</span></div>
+        <pre>loading…</pre><div class="textprev-fade"></div></div>`;
+    }
     if (["file", "image", "video", "audio"].includes(i.kind)) {
       const ic = { image: "🖼️", video: "🎞️", audio: "🎵" }[i.kind] || "📦";
       return `<div class="filebox"><span class="ic">${ic}</span><div><div class="fn">${esc(i.file_name)}</div>
@@ -652,7 +686,8 @@
           ${a !== null ? `<div class="rate-row"><span class="avg">${a.toFixed(1)} ★</span></div>` : ""}
         </div>
         <div class="actions">
-          ${f ? `<a href="${esc(f)}" target="_blank" rel="noopener" download>open</a>` : ""}
+          ${f && isTextFile(i) ? `<button type="button" data-read="${i.id}">read</button>` : ""}
+          ${f ? `<a href="${esc(f)}" target="_blank" rel="noopener" download="${esc(i.file_name || "")}">${isTextFile(i) ? "download" : "open"}</a>` : ""}
           <button type="button" data-del="${i.id}">remove</button>
         </div>
       </div>
@@ -661,6 +696,7 @@
 
   function wire() {
     wireTags();
+    wireText();
     document.querySelectorAll("[data-rate]").forEach((box) => {
       box.querySelectorAll("button").forEach((b) => b.onclick = async () => {
         const it = items.find((x) => x.id === box.dataset.rate);
@@ -946,6 +982,77 @@
     load();
   };
 
+  // ---------- text files: preview + reader ----------
+  const TEXT_EXT = /\.(txt|md|markdown|log|json|csv|tsv|xml|ya?ml|toml|ini|cfg|conf|js|mjs|ts|tsx|jsx|py|lua|java|kt|c|h|cpp|hpp|cs|go|rs|rb|php|sh|bat|ps1|sql|html?|css|srt|vtt|lrc)$/i;
+  const MAX_TEXT = 2 * 1024 * 1024; // don't load giant files into the page
+  const textCache = new Map();      // item id -> Promise<string>
+
+  function isTextFile(i) {
+    if (i.kind !== "file") return false;
+    const ct = String(i.content_type || "").toLowerCase();
+    return ct.startsWith("text/") || /json|xml|javascript|x-sh|x-python|yaml|toml|csv/.test(ct) || TEXT_EXT.test(i.file_name || "");
+  }
+
+  function loadText(it) {
+    if (!textCache.has(it.id)) {
+      const p = (async () => {
+        if ((it.size_bytes || 0) > MAX_TEXT) throw new Error("too big to show here, use download");
+        const res = await fetch(it.file_url);
+        if (!res.ok) throw new Error(`couldn't load (${res.status})`);
+        const buf = await res.arrayBuffer();
+        // most Discord text is UTF-8; fall back to Windows-1252 if it isn't valid UTF-8
+        try { return new TextDecoder("utf-8", { fatal: true }).decode(buf); }
+        catch { return new TextDecoder("windows-1252").decode(buf); }
+      })();
+      p.catch(() => textCache.delete(it.id)); // allow retry after an error
+      textCache.set(it.id, p);
+    }
+    return textCache.get(it.id);
+  }
+
+  function wireText() {
+    document.querySelectorAll("[data-text-id]").forEach((box) => {
+      const it = items.find((x) => x.id === box.dataset.textId);
+      if (!it) return;
+      const pre = box.querySelector("pre");
+      loadText(it).then((t) => { pre.textContent = t.slice(0, 1200) || "(empty file)"; })
+        .catch((e) => { pre.textContent = e.message; });
+      const open = () => openReader(it);
+      box.onclick = open;
+      box.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } };
+    });
+    document.querySelectorAll("[data-read]").forEach((b) => b.onclick = () => openReader(items.find((x) => x.id === b.dataset.read)));
+  }
+
+  async function openReader(it) {
+    if (!it) return;
+    $("readerTitle").textContent = it.file_name || "file";
+    $("readerInfo").textContent = size(it.size_bytes);
+    $("readerDl").href = it.file_url;
+    $("readerDl").setAttribute("download", it.file_name || "");
+    $("readerText").textContent = "loading…";
+    $("reader").classList.remove("hidden");
+    try {
+      const t = await loadText(it);
+      $("readerText").textContent = t || "(empty file)";
+      const lines = t ? t.split("\n").length : 0;
+      $("readerInfo").textContent = `${size(it.size_bytes)} · ${lines} line${lines === 1 ? "" : "s"}`;
+    } catch (e) { $("readerText").textContent = e.message; }
+    $("readerText").scrollTop = 0;
+    $("readerClose").focus();
+  }
+
+  $("readerClose").onclick = () => $("reader").classList.add("hidden");
+  $("reader").onclick = (e) => { if (e.target === $("reader")) $("reader").classList.add("hidden"); };
+  $("readerWrap").onclick = () => {
+    const on = $("readerText").classList.toggle("wrap");
+    $("readerWrap").textContent = `wrap: ${on ? "on" : "off"}`;
+  };
+  $("readerCopy").onclick = async () => {
+    try { await navigator.clipboard.writeText($("readerText").textContent); toast("copied"); }
+    catch { toast("couldn't copy, select the text instead", true); }
+  };
+
   // ---------- colour themes (saved in the vault_theme cookie by themes.js) ----------
   function renderThemePicker() {
     const T = window.VAULT_THEMES;
@@ -980,6 +1087,7 @@
     if (e.key !== "Escape") return;
     $("lightbox").classList.add("hidden");
     $("importer").classList.add("hidden");
+    $("reader").classList.add("hidden");
     closeThemes();
   });
 

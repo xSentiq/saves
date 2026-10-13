@@ -228,7 +228,8 @@ async function randomPost(kind: string): Promise<string> {
   if (it.note) lines.push(`📝 ${String(it.note).slice(0, 300)}`);
   for (const n of pnotes || []) lines.push(`💬 ${n.author}: ${String(n.note).slice(0, 200)}`);
   if (!link && it.kind !== "text") lines.push("_(file wasn't stored, only the info)_");
-  const tail = link ? `\n${link}` : ""; // last, so Discord shows the preview under the text
+  // masked link: shows as a short "link" but Discord still previews it underneath
+  const tail = link ? `\n[link](${link})` : "";
   return lines.join("\n").slice(0, 1990 - tail.length) + tail;
 }
 
@@ -284,7 +285,7 @@ Deno.serve(async (req) => {
       return json({ type: 5 }); // not ephemeral: the random pick is posted for both of you
     }
     // "/vault link" (and the old plain "/vault")
-    return json({ type: 4, data: { flags: EPHEMERAL, content: `🐱 mrrp! the vault: ${SITE_URL}` } });
+    return json({ type: 4, data: { flags: EPHEMERAL, content: `🐱 mrrp! [open the vault](${SITE_URL})` } });
   }
 
   if (cmd === "Save to Vault" && i.data?.type === 3) {

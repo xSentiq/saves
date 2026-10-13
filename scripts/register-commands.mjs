@@ -17,7 +17,27 @@ const everywhere = { integration_types: [0, 1], contexts: [0, 1, 2] };
 
 const commands = [
   { name: "Save to Vault", type: 3, ...everywhere },                                 // right-click a message → Apps
-  { name: "vault", type: 1, description: "Get the link to the vault", ...everywhere }, // /vault
+  {
+    name: "vault", type: 1, description: "Peak Vault", ...everywhere,
+    options: [
+      { type: 1, name: "link", description: "Get the link to the vault (only you see it)" },
+      {
+        type: 1, name: "random", description: "Post a random thing from the vault",
+        options: [{
+          type: 3, name: "type", description: "Only pick this kind", required: false,
+          choices: [
+            { name: "anything", value: "any" },
+            { name: "image", value: "image" },
+            { name: "video", value: "video" },
+            { name: "YouTube", value: "youtube" },
+            { name: "link", value: "link" },
+            { name: "audio", value: "audio" },
+            { name: "quote", value: "text" },
+          ],
+        }],
+      },
+    ],
+  },
 ];
 
 const res = await fetch(`https://discord.com/api/v10/applications/${appId}/commands`, {

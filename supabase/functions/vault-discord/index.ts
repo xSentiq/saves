@@ -3,7 +3,8 @@
 // Handles:
 //   • "Save to Vault"  – message context-menu command (right-click a message → Apps).
 //                        Works in DMs because the app is *user-installed*.
-//   • /vault           – replies with the website link.
+//   • /vault link      – replies with the website link (only you see it).
+//   • /vault random    – posts a random saved thing for both of you (optional type filter).
 //
 // Discord gives us the full target message in the interaction payload, so we never
 // read any chat on our own: only the message you explicitly click gets saved.
@@ -184,11 +185,58 @@ async function saveMessage(msg: any, savedBy: { id: string; name: string }, chan
   return { saved, already: items.length - saved, problems };
 }
 
+// ---------- /vault random ----------
+
+const KIND_LABEL: Record<string, string> = {
+  image: "an image", video: "a video", youtube: "a YouTube video", link: "a link",
+  audio: "some audio", file: "a file", text: "a quote",
+};
+
+async function randomPost(kind: string): Promise<string> {
+  let q = supabase.from("vault_items").select("id", { count: "exact", head: true });
+  if (kind !== "any") q = q.eq("kind", kind);
+  const { count } = await q;
+  if (!count) return kind === "any" ? "🐱 the vault is empty… save something first!" : `🐱 no ${kind} in the vault yet.`;
+
+  let pick = supabase.from("vault_items").select("*").order("created_at", { ascending: true });
+  if (kind !== "any") pick = pick.eq("kind", kind);
+  const off = Math.floor(Math.random() * count);
+  const { data: rows } = await pick.range(off, off);
+  const it = rows?.[0];
+  if (!it) return "🐱 mrrp? couldn't pick one, try again.";
+
+  const [{ data: ratings }, { data: pnotes }] = await Promise.all([
+    supabase.from("vault_ratings").select("rater, score").eq("item_id", it.id),
+    supabase.from("vault_personal_notes").select("author, note").eq("item_id", it.id),
+  ]);
+
+  let link = it.url as string | null;
+  if (!link && it.storage_path) {
+    const { data } = await supabase.storage.from(BUCKET).createSignedUrl(it.storage_path, 7 * 24 * 3600);
+    link = data?.signedUrl ?? null;
+  }
+
+  const when = it.posted_at || it.created_at;
+  const date = when ? new Date(when).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : "";
+  const stars = (ratings || []).map((r) => `${r.rater} ${"★".repeat(r.score)}${"☆".repeat(5 - r.score)}`).join(" · ");
+  const lines = [
+    `🎲 **from the vault**: ${KIND_LABEL[it.kind] || "something"}${it.author_name ? ` from **${it.author_name}**` : ""}${date ? ` (${date})` : ""}`,
+  ];
+  if (it.title) lines.push(`**${String(it.title).slice(0, 200)}**`);
+  if (it.kind === "text" && it.message_text) lines.push(`> ${String(it.message_text).slice(0, 600).replace(/\n/g, "\n> ")}`);
+  lines.push(stars ? stars : "nobody rated this yet 👀");
+  if (it.note) lines.push(`📝 ${String(it.note).slice(0, 300)}`);
+  for (const n of pnotes || []) lines.push(`💬 ${n.author}: ${String(n.note).slice(0, 200)}`);
+  if (!link && it.kind !== "text") lines.push("_(file wasn't stored, only the info)_");
+  const tail = link ? `\n${link}` : ""; // last, so Discord shows the preview under the text
+  return lines.join("\n").slice(0, 1990 - tail.length) + tail;
+}
+
 // deno-lint-ignore no-explicit-any
 async function editReply(i: any, content: string) {
   await fetch(
     `https://discord.com/api/v10/webhooks/${i.application_id}/${i.token}/messages/@original`,
-    { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content }) },
+    { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content, allowed_mentions: { parse: [] } }) },
   );
 }
 
@@ -225,6 +273,17 @@ Deno.serve(async (req) => {
   const cmd = i.data?.name;
 
   if (cmd === "vault") {
+    const sub = i.data?.options?.[0];
+    if (sub?.name === "random") {
+      // deno-lint-ignore no-explicit-any
+      const kind = sub.options?.find((o: any) => o.name === "type")?.value || "any";
+      EdgeRuntime.waitUntil((async () => {
+        try { await editReply(i, await randomPost(kind)); }
+        catch (e) { await editReply(i, `🙀 something broke: ${(e as Error).message}`); }
+      })());
+      return json({ type: 5 }); // not ephemeral: the random pick is posted for both of you
+    }
+    // "/vault link" (and the old plain "/vault")
     return json({ type: 4, data: { flags: EPHEMERAL, content: `🐱 mrrp! the vault: ${SITE_URL}` } });
   }
 

@@ -25,8 +25,8 @@ Discord DM ──right-click → Apps → mreow → "Save to Vault"──▶ vau
 | Path | What |
 |---|---|
 | `site/` | The website (plain HTML/JS, no build step) |
-| `supabase/functions/vault-discord/` | Discord interactions endpoint ("Save to Vault", `/vault`) |
-| `supabase/functions/vault-api/` | Passcode login, list, rate, note, remove |
+| `supabase/functions/vault-discord/` | Discord interactions endpoint ("Save to Vault", `/vault link`, `/vault random`) |
+| `supabase/functions/vault-api/` | Passcode login, list, rate, notes, remove, storage meter, bulk import |
 | `supabase/migrations/` | Tables + private storage bucket |
 | `scripts/register-commands.mjs` | Registers the Discord commands |
 | `.github/workflows/` | Pages deploy, command registration, optional Supabase deploy |
@@ -51,6 +51,7 @@ In Supabase, open the project, then **Edge Functions → Secrets**, and add:
 | `ALLOWED_DISCORD_USER_IDS` | our two Discord user IDs, comma-separated |
 | `VAULT_NAMES` | `Sentiq,furfyl` (names on the login screen; 1st = 🐱, 2nd = 🐶) |
 | `VAULT_SITE_URL` | optional, defaults to `https://vault.faggot.world/` |
+| `DISCORD_BOT_TOKEN` | the bot token, only needed for **Import** (it refreshes expired file links from old DMs) |
 
 Don't know your Discord ID? Leave `ALLOWED_DISCORD_USER_IDS` empty for now. The first time you use **Save to Vault**, mreow replies with your ID.
 
@@ -70,6 +71,17 @@ Save. Discord sends a test ping, and it only saves once `DISCORD_PUBLIC_KEY` is 
 
 ### 5. Install it (both of us)
 Open the install link from **Installation** in the Developer Portal and choose **Add to My Apps**. After that, right-click a message in your DM, then go to **Apps → mreow → Save to Vault**.
+
+## Features
+
+* **Save to Vault**: right-click a message → Apps → mreow → Save to Vault.
+* **`/vault random [type]`**: mreow posts a random saved thing into the chat for both of you, with ratings and notes. Pick a type (image, video, YouTube, link, audio, quote) or leave it on anything.
+* **`/vault link`**: the site link, only you see it.
+* **Notes**: one shared note per item (both edit) and one personal note each (both read, only the owner edits).
+* **Storage meter**: shows how much of the 1 GB is used, split by type. Turns yellow at 70% and red at 90%.
+* **Import**: on the site, click **Import** and pick your Discord data package (Settings → Data & Privacy → Request all of my data → Messages). Choose your DM and it saves every file and link from it. The package only has your own messages, so each of you imports your own. Anything already saved is skipped, so it's safe to run again. Needs the `DISCORD_BOT_TOKEN` secret.
+
+After changing commands (like adding `/vault random`), run **Actions → Register Discord commands** again and reload Discord with Ctrl+R.
 
 ## Custom domain (vault.faggot.world)
 

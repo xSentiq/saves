@@ -8,10 +8,14 @@
 //   note   { token, id, note, scope? } → { ok }        (scope "shared" = note both can edit,
 //                                                      "personal" = your own note, read-only for others)
 //   remove { token, id }        → { ok }               (deletes item + file)
+//   import { token, channel_id, messages: [{id, timestamp, content, attachments: [url]}] }
+//                               → { saved, already, problems, storage }
+//                                 (bulk import from the official Discord data package; max 15 messages per call)
 //
 // Env (Supabase → Edge Functions → Secrets):
-//   VAULT_PASSCODE   – the shared passcode. Changing it logs everyone out.
-//   VAULT_NAMES      – comma-separated names to pick from, default "Sentiq,furfyl"
+//   VAULT_PASSCODE    – the shared passcode. Changing it logs everyone out.
+//   VAULT_NAMES       – comma-separated names to pick from, default "Sentiq,furfyl"
+//   DISCORD_BOT_TOKEN – only for import: refreshes expired Discord attachment links
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 
@@ -22,6 +26,9 @@ const supabase = createClient(
 );
 
 const BUCKET = "vault";
+const STORAGE_LIMIT = 1024 ** 3;            // Supabase free plan: 1 GB
+const STORAGE_STOP = STORAGE_LIMIT * 0.95;  // import stops storing files above this
+const MAX_FILE = 50 * 1024 * 1024;          // free plan per-file limit
 const TOKEN_DAYS = 30;
 const MAX_FAILS = 8;          // per IP …
 const FAIL_WINDOW_MIN = 15;   // … per 15 minutes
@@ -82,6 +89,166 @@ async function sameSecret(a: string, b: string) {
   let diff = 0;
   for (let i = 0; i < x.length; i++) diff |= x[i] ^ y[i];
   return diff === 0;
+}
+
+async function storageUsed(): Promise<number> {
+  const { data } = await supabase.rpc("vault_storage_used");
+  return Number(data ?? 0);
+}
+
+// ---------- bulk import helpers (same rules as mreow's "Save to Vault") ----------
+
+const URL_RE = /https?:\/\/[^\s<>()"']+[^\s<>()"'.,;:!?\]]/gi;
+const DISCORD_CDN = /^https:\/\/(cdn\.discordapp\.com|media\.discordapp\.net)\/attachments\/\d+\/(\d+)\/([^?#]+)/;
+
+function youtubeId(u: string): string | null {
+  try {
+    const url = new URL(u);
+    const h = url.hostname.replace(/^www\.|^m\./, "");
+    if (h === "youtu.be") return url.pathname.slice(1).split("/")[0] || null;
+    if (h === "youtube.com" || h === "music.youtube.com") {
+      if (url.pathname === "/watch") return url.searchParams.get("v");
+      const m = url.pathname.match(/^\/(shorts|embed|live)\/([\w-]{6,})/);
+      if (m) return m[2];
+    }
+  } catch { /* not a url */ }
+  return null;
+}
+
+function kindFor(contentType: string | null, name: string): string {
+  const ct = (contentType || "").toLowerCase();
+  if (ct.startsWith("image/") || /\.(png|jpe?g|gif|webp|avif|bmp)$/i.test(name)) return "image";
+  if (ct.startsWith("video/") || /\.(mp4|webm|mov|mkv)$/i.test(name)) return "video";
+  if (ct.startsWith("audio/") || /\.(mp3|ogg|wav|flac|m4a|opus)$/i.test(name)) return "audio";
+  return "file";
+}
+
+const safeName = (n: string) => n.replace(/[^\w.\-]+/g, "_").slice(-120) || "file";
+
+async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | null> {
+  return await Promise.race([p, new Promise<null>((r) => setTimeout(() => r(null), ms))]);
+}
+
+async function youtubeTitle(u: string): Promise<string | null> {
+  try {
+    const res = await withTimeout(fetch(`https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(u)}`), 4000);
+    if (!res || !res.ok) return null;
+    const j = await res.json();
+    return j.title ? `${j.title}` : null;
+  } catch { return null; }
+}
+
+// Discord attachment links in the data package have expired; a bot can get fresh ones.
+async function refreshUrls(urls: string[]): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  const bot = Deno.env.get("DISCORD_BOT_TOKEN");
+  for (let k = 0; k < urls.length; k += 50) {
+    const res = await fetch("https://discord.com/api/v10/attachments/refresh-urls", {
+      method: "POST",
+      headers: { Authorization: `Bot ${bot}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ attachment_urls: urls.slice(k, k + 50) }),
+    });
+    if (!res.ok) throw new Error(`Discord refused to refresh links (${res.status}). Is DISCORD_BOT_TOKEN right?`);
+    const j = await res.json();
+    for (const r of j.refreshed_urls || []) out[r.original] = r.refreshed;
+  }
+  return out;
+}
+
+type ImportMsg = { id: string; timestamp?: string; content?: string; attachments?: string[] };
+
+async function importBatch(who: string, channelId: string, msgs: ImportMsg[]) {
+  const problems: string[] = [];
+  const rows: Record<string, unknown>[] = [];
+  let used = await storageUsed();
+
+  // plan every item first, then skip the ones already in the vault before doing any downloads
+  type Plan = { key: string; msg: ImportMsg; att?: { url: string; id: string; name: string }; url?: string };
+  const plans: Plan[] = [];
+  for (const m of msgs) {
+    if (!/^\d{5,25}$/.test(String(m.id))) continue;
+    for (const raw of m.attachments || []) {
+      const hit = String(raw).match(DISCORD_CDN);
+      if (!hit) continue;
+      const name = decodeURIComponent(hit[3]);
+      plans.push({ key: `${m.id}:att:${hit[2]}`, msg: m, att: { url: raw.split("?")[0], id: hit[2], name } });
+    }
+    for (const u of new Set(String(m.content || "").match(URL_RE) || [])) {
+      if (DISCORD_CDN.test(u)) continue; // pasted attachment links are handled as attachments above
+      plans.push({ key: `${m.id}:url:${u}`, msg: m, url: u });
+    }
+  }
+  if (!plans.length) return { saved: 0, already: 0, problems, storage: used };
+
+  const { data: existing } = await supabase.from("vault_items").select("dedup_key").in("dedup_key", plans.map((p) => p.key));
+  const have = new Set((existing || []).map((r) => r.dedup_key));
+  const todo = plans.filter((p) => !have.has(p.key));
+
+  const fresh = await refreshUrls(todo.filter((p) => p.att).map((p) => p.att!.url));
+
+  for (const p of todo) {
+    const base = {
+      dedup_key: p.key,
+      discord_message_id: String(p.msg.id),
+      discord_channel_id: channelId || null,
+      author_name: who,
+      posted_at: p.msg.timestamp ? new Date(p.msg.timestamp).toISOString() : null,
+      saved_by_name: who,
+      message_text: (p.msg.content || "").trim() || null,
+    };
+
+    if (p.url) {
+      const yt = youtubeId(p.url);
+      let host = "";
+      try { host = new URL(p.url).hostname.replace(/^www\./, ""); } catch { /* ignore */ }
+      rows.push({
+        ...base,
+        kind: yt ? "youtube" : "link",
+        url: p.url,
+        title: yt ? await youtubeTitle(p.url) : null,
+        site_name: yt ? "YouTube" : host || null,
+        thumbnail_url: yt ? `https://i.ytimg.com/vi/${yt}/hqdefault.jpg` : null,
+      });
+      continue;
+    }
+
+    const a = p.att!;
+    const row: Record<string, unknown> = { ...base, file_name: a.name, kind: kindFor(null, a.name) };
+    const link = fresh[a.url] || fresh[a.url + "?"] || null;
+    try {
+      if (!link) throw new Error("Discord has no fresh link (file deleted?)");
+      if (used > STORAGE_STOP) throw new Error("storage almost full");
+      const res = await fetch(link);
+      if (!res.ok) throw new Error(`download ${res.status}`);
+      const len = Number(res.headers.get("content-length") || 0);
+      if (len > MAX_FILE) { await res.body?.cancel(); throw new Error("over 50 MB"); }
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      if (bytes.length > MAX_FILE) throw new Error("over 50 MB");
+      if (used + bytes.length > STORAGE_STOP) throw new Error("storage almost full");
+      const ct = res.headers.get("content-type");
+      const path = `import/${p.msg.id}-${a.id}-${safeName(a.name)}`;
+      const { error } = await supabase.storage.from(BUCKET).upload(path, bytes, {
+        contentType: ct || "application/octet-stream", upsert: true,
+      });
+      if (error) throw error;
+      used += bytes.length;
+      Object.assign(row, { storage_path: path, content_type: ct, size_bytes: bytes.length, kind: kindFor(ct, a.name) });
+    } catch (e) {
+      const msg = (e as Error).message;
+      row.note = `Not stored: ${msg}. Only the info was saved.`;
+      problems.push(`${a.name}: ${msg}`);
+    }
+    rows.push(row);
+  }
+
+  let saved = 0;
+  if (rows.length) {
+    const { data, error } = await supabase.from("vault_items")
+      .upsert(rows, { onConflict: "dedup_key", ignoreDuplicates: true }).select("id");
+    if (error) throw error;
+    saved = data?.length ?? 0;
+  }
+  return { saved, already: plans.length - todo.length, problems, storage: used };
 }
 
 function clientIp(req: Request) {
@@ -146,6 +313,7 @@ Deno.serve(async (req) => {
     return json({
       you: who,
       names: names(),
+      storage: { used: await storageUsed(), limit: STORAGE_LIMIT },
       items: (items || []).map((i) => ({
         ...i,
         file_url: i.storage_path ? urls[i.storage_path] ?? null : null,
@@ -153,6 +321,19 @@ Deno.serve(async (req) => {
         personal_notes: notesByItem[i.id] || {},
       })),
     });
+  }
+
+  if (action === "import") {
+    if (!Deno.env.get("DISCORD_BOT_TOKEN")) {
+      return json({ error: "Import needs the DISCORD_BOT_TOKEN secret in Supabase (it refreshes old Discord file links)." }, 503);
+    }
+    const msgs = Array.isArray(body.messages) ? (body.messages as ImportMsg[]).slice(0, 15) : [];
+    const channelId = /^\d{5,25}$/.test(String(body.channel_id || "")) ? String(body.channel_id) : "";
+    try {
+      return json(await importBatch(who, channelId, msgs));
+    } catch (e) {
+      return json({ error: (e as Error).message }, 502);
+    }
   }
 
   const id = String(body.id || "");

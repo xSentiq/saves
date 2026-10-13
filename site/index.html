@@ -80,6 +80,31 @@
   main { max-width: 1280px; margin: 0 auto; padding: 18px 16px 80px; }
   .stats { display: flex; gap: 18px; flex-wrap: wrap; color: var(--muted); font-size: 14px; margin-bottom: 16px; }
 
+  /* tags */
+  .tagbar { max-width: 1280px; margin: 0 auto; padding: 0 16px 12px; display: flex; gap: 6px; align-items: center;
+    flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; }
+  .tagbar > * { flex: 0 0 auto; }
+  .tagbar-label { font-size: 12px; color: var(--muted); margin-right: 2px; }
+  .tag-chip { background: none; border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; font-size: 13px;
+    cursor: pointer; color: var(--muted); font-family: var(--mono); }
+  .tag-chip .n { opacity: .55; margin-left: 4px; font-size: 11px; }
+  .tag-chip:hover { color: var(--ink); border-color: var(--muted); }
+  .tag-chip[aria-pressed="true"] { background: var(--gold); border-color: var(--gold); color: #1a1408; }
+  .tag-clear { background: none; border: 0; color: var(--muted); text-decoration: underline; cursor: pointer; font-size: 12px; }
+  .tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; align-items: center; }
+  .vtag { display: inline-flex; align-items: center; background: var(--panel-2); border: 1px solid var(--line); border-radius: 999px;
+    font-family: var(--mono); font-size: 12px; overflow: hidden; }
+  .vtag.on { border-color: var(--gold); }
+  .tag-name { background: none; border: 0; color: var(--ink); padding: 3px 4px 3px 9px; cursor: pointer; font: inherit; }
+  .tag-name:hover { color: var(--gold); }
+  .tag-x { background: none; border: 0; color: var(--muted); padding: 3px 8px 3px 2px; cursor: pointer; font-size: 13px; line-height: 1; }
+  .tag-x:hover { color: var(--danger); }
+  .tag-add { background: none; border: 1px dashed var(--line); border-radius: 999px; color: var(--muted); padding: 3px 9px;
+    font-family: var(--mono); font-size: 12px; cursor: pointer; }
+  .tag-add:hover { color: var(--ink); border-color: var(--muted); }
+  .tag-input { width: 130px; background: #0e0c0b; border: 1px solid var(--gold); border-radius: 999px; padding: 3px 10px;
+    font-family: var(--mono); font-size: 12px; outline: none; color: var(--ink); }
+
   /* storage meter */
   .meter { margin-bottom: 14px; }
   .meter-top { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; color: var(--muted); margin-bottom: 6px; flex-wrap: wrap; }
@@ -233,8 +258,11 @@
         <option value="top">Top rated</option>
         <option value="unrated">Not rated by me</option>
         <option value="fight">Biggest disagreement</option>
+        <option value="tag">By tag (A–Z)</option>
       </select>
       <input class="search" id="q" placeholder="search…" aria-label="Search">
+    </div>
+    <div class="tagbar hidden" id="tagbar" aria-label="Filter by tag">
     </div>
   </header>
   <main>
@@ -245,6 +273,7 @@
 </section>
 
 <div id="lightbox" class="hidden"><img alt=""></div>
+<datalist id="tagList"></datalist>
 
 <!-- ========== bulk import ========== -->
 <div id="importer" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="impTitle">
@@ -300,6 +329,7 @@
   let items = [];
   let storage = null; // { used, limit } in bytes
   let kind = "all";
+  const tagFilter = new Set(); // selected tags; an item must have all of them
   let pickedName = me;
 
   const call = async (action, extra = {}) => {
@@ -400,10 +430,13 @@
       `<button class="chip" data-k="${k}" aria-pressed="${k === kind}">${label}<span class="n">${k === "all" ? items.length : counts[k]}</span></button>`).join("");
     $("kinds").querySelectorAll("button").forEach((b) => b.onclick = () => { kind = b.dataset.k; render(); });
 
-    const q = $("q").value.trim().toLowerCase();
+    renderTagbar();
+
+    const q = $("q").value.trim().toLowerCase().replace(/^#/, "");
     let list = items.filter((i) => kind === "all" || i.kind === kind);
+    if (tagFilter.size) list = list.filter((i) => [...tagFilter].every((t) => (i.tags || []).includes(t)));
     if (q) list = list.filter((i) => [i.title, i.message_text, i.file_name, i.site_name, i.author_name, i.note, i.url,
-        ...Object.values(i.personal_notes || {}).map((n) => n.note)]
+        ...(i.tags || []), ...Object.values(i.personal_notes || {}).map((n) => n.note)]
       .some((v) => v && String(v).toLowerCase().includes(q)));
 
     const s = $("sort").value;
@@ -415,6 +448,11 @@
     if (s === "fight") {
       const gap = (i) => { const v = Object.values(i.ratings); return v.length < 2 ? -1 : Math.max(...v) - Math.min(...v); };
       list = list.filter((i) => gap(i) > 0).sort((a, b) => gap(b) - gap(a));
+    }
+    if (s === "tag") {
+      // alphabetical by first tag, untagged last, newest first within the same tag
+      const first = (i) => [...(i.tags || [])].sort()[0] || "￿";
+      list.sort((a, b) => first(a).localeCompare(first(b)) || t(b) - t(a));
     }
 
     // stats
@@ -469,6 +507,79 @@
       </div></div>`;
   }
 
+  // ---------- tags ----------
+  function allTags() {
+    const c = {};
+    for (const i of items) for (const t of i.tags || []) c[t] = (c[t] || 0) + 1;
+    return Object.entries(c).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  }
+
+  function renderTagbar() {
+    const tags = allTags();
+    for (const t of [...tagFilter]) if (!tags.some(([x]) => x === t)) tagFilter.delete(t); // tag disappeared
+    const bar = $("tagbar");
+    bar.classList.toggle("hidden", !tags.length);
+    bar.innerHTML = `<span class="tagbar-label">tags</span>` +
+      tags.map(([t, n]) => `<button type="button" class="tag-chip" data-filter-tag="${esc(t)}" aria-pressed="${tagFilter.has(t)}">#${esc(t)}<span class="n">${n}</span></button>`).join("") +
+      (tagFilter.size ? `<button type="button" class="tag-clear" id="tagClear">clear</button>` : "");
+    bar.querySelectorAll("[data-filter-tag]").forEach((b) => b.onclick = () => toggleTag(b.dataset.filterTag));
+    if ($("tagClear")) $("tagClear").onclick = () => { tagFilter.clear(); render(); };
+    $("tagList").innerHTML = tags.map(([t]) => `<option value="${esc(t)}">`).join("");
+  }
+
+  function toggleTag(t) {
+    if (tagFilter.has(t)) tagFilter.delete(t); else tagFilter.add(t);
+    render();
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function tagsRow(i) {
+    const tags = i.tags || [];
+    return `<div class="tags" data-tags-for="${i.id}">
+      ${tags.map((t) => `<span class="vtag ${tagFilter.has(t) ? "on" : ""}"><button type="button" class="tag-name" data-filter-tag="${esc(t)}" title="show only #${esc(t)}">#${esc(t)}</button><button type="button" class="tag-x" data-untag="${esc(t)}" aria-label="remove tag ${esc(t)}">×</button></span>`).join("")}
+      ${tags.length < 12 ? `<button type="button" class="tag-add" data-add-tag="${i.id}">+ tag</button>` : ""}
+    </div>`;
+  }
+
+  const cleanTag = (t) => String(t).toLowerCase().trim().replace(/^#+/, "").replace(/\s+/g, "-").replace(/[^\p{L}\p{N}_-]/gu, "").slice(0, 24);
+
+  async function saveTags(it, tags) {
+    const prev = it.tags || [];
+    it.tags = [...new Set(tags.map(cleanTag).filter(Boolean))].slice(0, 12);
+    render();
+    try { const r = await call("tags", { id: it.id, tags: it.tags }); it.tags = r.tags; render(); }
+    catch (e) { it.tags = prev; render(); toast(e.message, true); }
+  }
+
+  function wireTags() {
+    document.querySelectorAll(".card [data-filter-tag]").forEach((b) => b.onclick = () => toggleTag(b.dataset.filterTag));
+    document.querySelectorAll("[data-untag]").forEach((b) => b.onclick = () => {
+      const it = items.find((x) => x.id === b.closest("[data-tags-for]").dataset.tagsFor);
+      saveTags(it, (it.tags || []).filter((t) => t !== b.dataset.untag));
+    });
+    document.querySelectorAll("[data-add-tag]").forEach((b) => b.onclick = () => {
+      const it = items.find((x) => x.id === b.dataset.addTag);
+      const input = document.createElement("input");
+      input.className = "tag-input";
+      input.setAttribute("list", "tagList");
+      input.placeholder = "tag, tag…";
+      input.maxLength = 120;
+      b.replaceWith(input);
+      input.focus();
+      let done = false;
+      const commit = () => {
+        if (done) return; done = true;
+        const add = input.value.split(/[,\s]+/).map(cleanTag).filter(Boolean);
+        if (add.length) saveTags(it, [...(it.tags || []), ...add]); else render();
+      };
+      input.onkeydown = (e) => {
+        if (e.key === "Enter") { e.preventDefault(); commit(); }
+        if (e.key === "Escape") { done = true; render(); }
+      };
+      input.onblur = commit;
+    });
+  }
+
   // One shared note (both edit) + one personal note per person (everyone reads, only the owner edits).
   function notesBlock(i) {
     const ago = (d) => d ? ` · ${when(d)}` : "";
@@ -504,6 +615,7 @@
       ${media(i)}
       <div class="body">
         ${title}${msg}
+        ${tagsRow(i)}
         ${notesBlock(i)}
         <div class="meta"><span>from <b class="${tone(i.author_name)}">${esc(i.author_name || "?")}</b></span><span>${esc(when(i.posted_at || i.created_at))}</span></div>
         <div class="rates">
@@ -519,6 +631,7 @@
   }
 
   function wire() {
+    wireTags();
     document.querySelectorAll("[data-rate]").forEach((box) => {
       box.querySelectorAll("button").forEach((b) => b.onclick = async () => {
         const it = items.find((x) => x.id === box.dataset.rate);

@@ -7,6 +7,7 @@
 //   rate   { token, id, score } → { ok }               (score 1–5, or 0 to clear)
 //   note   { token, id, note, scope? } → { ok }        (scope "shared" = note both can edit,
 //                                                      "personal" = your own note, read-only for others)
+//   tags   { token, id, tags }  → { ok, tags }         (replace the item's tags, max 12, lowercase)
 //   remove { token, id }        → { ok }               (deletes item + file)
 //   import { token, channel_id, messages: [{id, timestamp, content, attachments: [url]}] }
 //                               → { saved, already, problems, storage }
@@ -370,6 +371,16 @@ Deno.serve(async (req) => {
       .update({ note: note || null, note_by: note ? who : null, note_updated_at: note ? now : null })
       .eq("id", id);
     return error ? json({ error: error.message }, 500) : json({ ok: true, note_by: who, updated_at: now });
+  }
+
+  if (action === "tags") {
+    // replaces the item's tag list; both people can edit tags
+    const raw = Array.isArray(body.tags) ? body.tags : [];
+    const tags = [...new Set(raw
+      .map((t) => String(t).toLowerCase().trim().replace(/^#+/, "").replace(/\s+/g, "-").replace(/[^\p{L}\p{N}_-]/gu, "").slice(0, 24))
+      .filter(Boolean))].slice(0, 12);
+    const { error } = await supabase.from("vault_items").update({ tags }).eq("id", id);
+    return error ? json({ error: error.message }, 500) : json({ ok: true, tags });
   }
 
   if (action === "remove") {

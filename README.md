@@ -78,6 +78,7 @@ Open the install link from **Installation** in the Developer Portal and choose *
 * **`/vault random [type]`**: mreow posts a random saved thing into the chat for both of you, with ratings and notes. Pick a type (image, video, YouTube, link, audio, quote) or leave it on anything.
 * **`/vault link`**: the site link, only you see it.
 * **Notes**: one shared note per item (both edit) and one personal note each (both read, only the owner edits).
+* **Tags**: add tags to any item with **+ tag** (type several separated by commas, existing tags autocomplete). Click a tag to filter; pick several to narrow down. Sort by **By tag (A–Z)**. Both of you can edit tags.
 * **Storage meter**: shows how much of the 1 GB is used, split by type. Turns yellow at 70% and red at 90%.
 * **Import**: on the site, click **Import** and pick your Discord data package (Settings → Data & Privacy → Request all of my data → Messages). Choose your DM and it saves every file and link from it. The package only has your own messages, so each of you imports your own. Anything already saved is skipped, so it's safe to run again. Needs the `DISCORD_BOT_TOKEN` secret.
 

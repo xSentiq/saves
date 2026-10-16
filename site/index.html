@@ -396,8 +396,8 @@
       </div>
       <div id="kinds" style="display:contents"></div>
       <select class="chip" id="sort" aria-label="Sort">
-        <option value="new">Newest</option>
-        <option value="old">Oldest</option>
+        <option value="new">Newest saved</option>
+        <option value="old">Oldest saved</option>
         <option value="top">Top rated</option>
         <option value="unrated">Not rated by me</option>
         <option value="fight">Biggest disagreement</option>
@@ -629,7 +629,7 @@
       .some((v) => v && String(v).toLowerCase().includes(q)));
 
     const s = $("sort").value;
-    const t = (i) => new Date(i.posted_at || i.created_at).getTime();
+    const t = (i) => new Date(i.created_at).getTime(); // when it was saved to the vault (not when the message was sent)
     if (s === "new") list.sort((a, b) => t(b) - t(a));
     if (s === "old") list.sort((a, b) => t(a) - t(b));
     if (s === "top") list.sort((a, b) => (avg(b) ?? -1) - (avg(a) ?? -1));

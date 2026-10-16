@@ -355,6 +355,52 @@ async function enrichYoutube(it: any): Promise<boolean> {
   return Boolean(channel || (title && !it.title));
 }
 
+// Links saved without a preview: get title + cover. oEmbed for sites that have it, otherwise the page's og: tags.
+const OEMBED: [RegExp, string][] = [
+  [/^https:\/\/(open|play)\.spotify\.com\//i, "https://open.spotify.com/oembed?url="],
+  [/^https:\/\/(www\.|m\.)?soundcloud\.com\//i, "https://soundcloud.com/oembed?format=json&url="],
+  [/^https:\/\/(www\.)?tiktok\.com\//i, "https://www.tiktok.com/oembed?url="],
+  [/^https:\/\/(www\.)?vimeo\.com\//i, "https://vimeo.com/api/oembed.json?url="],
+];
+const decodeHtml = (t: string) => t.replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#0?39;|&apos;/g, "'")
+  .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)));
+
+// deno-lint-ignore no-explicit-any
+async function enrichLink(it: any): Promise<boolean> {
+  let title: string | null = null, thumb: string | null = null, channel: string | null = null;
+  try {
+    const oe = OEMBED.find(([re]) => re.test(it.url));
+    if (oe) {
+      const res = await withTimeout(fetch(oe[1] + encodeURIComponent(it.url)), 6000);
+      if (res && res.ok) {
+        const j = await res.json();
+        title = j.title || null; thumb = j.thumbnail_url || null; channel = j.author_name || null;
+      }
+    }
+    if (!title || !thumb) {
+      const res = await withTimeout(fetch(it.url, { headers: { "User-Agent": "Mozilla/5.0 (compatible; PeakVault/1.0)", "Accept": "text/html" }, redirect: "follow" }), 6000);
+      if (res && res.ok && (res.headers.get("content-type") || "").includes("text/html")) {
+        const html = (await res.text()).slice(0, 400_000);
+        const meta = (prop: string) => {
+          const m = html.match(new RegExp(`<meta[^>]+(?:property|name)=["']${prop}["'][^>]*content=["']([^"']+)["']`, "i"))
+            || html.match(new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]*(?:property|name)=["']${prop}["']`, "i"));
+          return m ? decodeHtml(m[1]).trim() : null;
+        };
+        const tag = html.match(/<title[^>]*>([^<]{1,300})<\/title>/i)?.[1];
+        title ||= meta("og:title") || meta("twitter:title") || (tag ? decodeHtml(tag).trim() : null);
+        thumb ||= meta("og:image") || meta("twitter:image");
+        channel ||= meta("og:site_name");
+      }
+    }
+  } catch { /* site down or blocks bots: just mark it as checked */ }
+  const update: Record<string, unknown> = { enriched_at: new Date().toISOString() };
+  if (title && !it.title) update.title = String(title).slice(0, 300);
+  if (thumb && !it.thumbnail_url && /^https:\/\//i.test(thumb)) update.thumbnail_url = thumb.slice(0, 1000);
+  if (channel && !it.channel) update.channel = String(channel).slice(0, 120);
+  await supabase.from("vault_items").update(update).eq("id", it.id);
+  return Object.keys(update).length > 1;
+}
+
 async function maintain() {
   const hasBot = Boolean(Deno.env.get("DISCORD_BOT_TOKEN"));
   const { data: q } = await supabase.rpc("vault_maintenance_queue", { max_items: 4, has_bot_token: hasBot });
@@ -366,10 +412,11 @@ async function maintain() {
       const needsRescue = (isExpiringUrl(it.url) && !it.storage_path) || (isExpiringUrl(it.thumbnail_url) && !it.thumb_path);
       if (needsRescue && await rescueItem(it)) changed++;
       if (it.kind === "youtube" && !it.enriched_at && await enrichYoutube(it)) changed++;
+      if (it.kind === "link" && !it.enriched_at && !isExpiringUrl(it.url) && (!it.title || !it.thumbnail_url) && await enrichLink(it)) changed++;
     }
   }
   const { data: after } = await supabase.rpc("vault_maintenance_queue", { max_items: 0, has_bot_token: hasBot });
-  return { processed: ids.length, remaining: after?.total ?? 0, changed };
+  return { processed: ids.length, remaining: after?.total ?? 0, changed, bot_token: hasBot };
 }
 
 const TIERS = ["S", "A", "B", "C", "F"];

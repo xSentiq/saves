@@ -25,6 +25,7 @@
 //   VAULT_NAMES       – comma-separated names to pick from, default "Sentiq,furfyl"
 //   DISCORD_BOT_TOKEN – refreshes expired Discord attachment links (import + rescuing old links)
 //   YOUTUBE_API_KEY   – YouTube Data API key: finds the YouTube version of saved Spotify songs
+//                       (can also live in the private vault_settings table as "youtube_api_key")
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 
@@ -406,6 +407,21 @@ async function enrichLink(it: any): Promise<boolean> {
 
 // ---------- Spotify → YouTube match (so the music player can play Spotify links via YouTube) ----------
 
+// private settings table (service role only), cached for a minute per function instance
+const settingsCache: Record<string, { v: string | null; t: number }> = {};
+async function setting(name: string): Promise<string | null> {
+  const c = settingsCache[name];
+  if (c && Date.now() - c.t < 60_000) return c.v;
+  const { data } = await supabase.from("vault_settings").select("value").eq("key", name).maybeSingle();
+  settingsCache[name] = { v: data?.value ?? null, t: Date.now() };
+  return data?.value ?? null;
+}
+async function saveSetting(name: string, value: string | null) {
+  settingsCache[name] = { v: value, t: Date.now() };
+  await supabase.from("vault_settings").upsert({ key: name, value, updated_at: new Date().toISOString() });
+}
+const youtubeKey = async () => Deno.env.get("YOUTUBE_API_KEY") || await setting("youtube_api_key");
+
 const norm = (t: string) => t.toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
   .replace(/\(.*?\)|\[.*?\]/g, " ").replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 const BAD_WORDS = ["live", "cover", "reaction", "karaoke", "instrumental", "sped up", "slowed", "nightcore", "8d",
@@ -431,7 +447,7 @@ async function spotifyInfo(url: string): Promise<{ artist: string | null; title:
 
 // deno-lint-ignore no-explicit-any
 async function matchSpotify(it: any): Promise<boolean> {
-  const key = Deno.env.get("YOUTUBE_API_KEY");
+  const key = await youtubeKey();
   if (!key) return false;
   let artist: string | null = it.channel, title: string | null = it.title;
   if (!artist || !title) { const info = await spotifyInfo(it.url); artist ||= info.artist; title ||= info.title; }
@@ -441,6 +457,8 @@ async function matchSpotify(it: any): Promise<boolean> {
   const q = artist ? `${artist} ${title}` : title;
   const res = await fetch(`https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=8&videoEmbeddable=true&q=${encodeURIComponent(q)}&key=${encodeURIComponent(key)}`);
   if (!res.ok) {
+    // remember why, so it can be checked without logs
+    try { await saveSetting("youtube_last_error", `${res.status} ${(await res.text()).slice(0, 300)}`); } catch { /* ignore */ }
     // quota used up / bad key / YouTube down: try this one again in about a day (the queue retries after 7 days,
     // so mark it as checked 6 days ago)
     const retry = new Date(Date.now() - 6 * 864e5).toISOString();
@@ -448,6 +466,7 @@ async function matchSpotify(it: any): Promise<boolean> {
     return false;
   }
   const j = await res.json();
+  if (await setting("youtube_last_error")) await saveSetting("youtube_last_error", null);
   const nt = norm(title), na = artist ? norm(artist) : "";
   // deno-lint-ignore no-explicit-any
   const scored = (j.items || []).map((v: any, idx: number) => {
@@ -487,7 +506,7 @@ async function maintain() {
     }
   }
   // Spotify songs → YouTube match (2 per call, each search costs YouTube API quota)
-  const hasYt = Boolean(Deno.env.get("YOUTUBE_API_KEY"));
+  const hasYt = Boolean(await youtubeKey());
   let ytProcessed = 0, ytRemaining = 0;
   if (hasYt) {
     const { data: yq } = await supabase.rpc("vault_youtube_match_queue", { max_items: 2 });

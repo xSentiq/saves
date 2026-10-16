@@ -60,6 +60,8 @@ const EPHEMERAL = 64;
 type Item = Record<string, unknown> & { dedup_key: string; kind: string };
 
 const URL_RE = /https?:\/\/[^\s<>()"']+[^\s<>()"'.,;:!?\]]/gi;
+// Discord attachment links (they expire ~24 h after Discord hands them out). Group 3 = attachment id, 4 = file name.
+const DISCORD_CDN = /^https:\/\/(cdn\.discordapp\.com|media\.discordapp\.net)\/(ephemeral-)?attachments\/\d+\/(\d+)\/([^?#]+)/i;
 
 function youtubeId(u: string): string | null {
   try {
@@ -153,6 +155,44 @@ async function saveMessage(msg: any, savedBy: { id: string; name: string }, chan
   const urls = [...new Set(content.match(URL_RE) || [])];
   for (const u of urls) {
     const embed = embeds.find((e) => e.url && (e.url === u || u.startsWith(e.url) || e.url.startsWith(u)));
+
+    // A pasted Discord file link (cdn.discordapp.com/attachments/...) expires in about a day,
+    // so store the file itself now while Discord still gives us a working link.
+    const cdn = u.match(DISCORD_CDN);
+    if (cdn) {
+      const name = decodeURIComponent(cdn[4]);
+      const attId = cdn[3];
+      const item: Item = { ...base, dedup_key: `${msg.id}:url:${u}`, kind: "link", url: u, site_name: "cdn.discordapp.com" };
+      // working (signed) copies of the same file: the pasted link itself, or the URLs in Discord's preview embed
+      const candidates = [u, embed?.url, embed?.thumbnail?.url, embed?.image?.url, embed?.video?.url,
+        embed?.thumbnail?.proxy_url, embed?.image?.proxy_url, embed?.video?.proxy_url]
+        .filter((c) => typeof c === "string" && c.includes(attId) && /[?&]ex=/.test(c)) as string[];
+      let stored = false;
+      for (const c of [...new Set(candidates)]) {
+        try {
+          const res = await fetch(c);
+          if (!res.ok) continue;
+          const len = Number(res.headers.get("content-length") || 0);
+          if (len > MAX_BYTES) { await res.body?.cancel(); problems.push(`${name} is over 50 MB`); break; }
+          const bytes = new Uint8Array(await res.arrayBuffer());
+          const ct = res.headers.get("content-type") || "application/octet-stream";
+          const path = `${new Date().toISOString().slice(0, 7)}/${msg.id}-${attId}-${safeName(name)}`;
+          const { error } = await supabase.storage.from(BUCKET).upload(path, bytes, { contentType: ct, upsert: true });
+          if (error) throw error;
+          Object.assign(item, {
+            kind: kindFor(ct, name), url: null, site_name: null, storage_path: path, file_name: name,
+            content_type: ct, size_bytes: bytes.length, rescued_from: u.split("?")[0],
+          });
+          stored = true;
+          break;
+        } catch { /* try the next candidate */ }
+      }
+      // couldn't store it now: keep the link; the site's background job rescues it with the bot token
+      if (!stored) item.thumbnail_url = candidates[0] || null;
+      items.push(item);
+      continue;
+    }
+
     const yt = youtubeId(u);
     let host = "";
     try { host = new URL(u).hostname.replace(/^www\./, ""); } catch { /* ignore */ }
@@ -163,6 +203,8 @@ async function saveMessage(msg: any, savedBy: { id: string; name: string }, chan
       url: u,
       title: embed?.title ?? null,
       site_name: embed?.provider?.name || embed?.author?.name || host || null,
+      // YouTube embeds name the channel in author.name, which helps the music player spot songs
+      ...(yt ? { channel: embed?.author?.name ?? null, enriched_at: embed?.author?.name ? new Date().toISOString() : null } : {}),
       thumbnail_url: yt
         ? `https://i.ytimg.com/vi/${yt}/hqdefault.jpg`
         : (embed?.thumbnail?.url || embed?.image?.url || null),
@@ -205,10 +247,13 @@ async function randomPost(kind: string): Promise<string> {
   const it = rows?.[0];
   if (!it) return "🐱 mrrp? couldn't pick one, try again.";
 
-  const [{ data: ratings }, { data: pnotes }] = await Promise.all([
+  const [{ data: ratings }, { data: pnotes }, { data: reacts }] = await Promise.all([
     supabase.from("vault_ratings").select("rater, score").eq("item_id", it.id),
     supabase.from("vault_personal_notes").select("author, note").eq("item_id", it.id),
+    supabase.from("vault_reactions").select("emoji").eq("item_id", it.id).order("created_at"),
   ]);
+  const reactCounts: Record<string, number> = {};
+  for (const r of reacts || []) reactCounts[r.emoji] = (reactCounts[r.emoji] || 0) + 1;
 
   let link = it.url as string | null;
   if (!link && it.storage_path) {
@@ -225,6 +270,9 @@ async function randomPost(kind: string): Promise<string> {
   if (it.title) lines.push(`**${String(it.title).slice(0, 200)}**`);
   if (it.kind === "text" && it.message_text) lines.push(`> ${String(it.message_text).slice(0, 600).replace(/\n/g, "\n> ")}`);
   lines.push(stars ? stars : "nobody rated this yet 👀");
+  const rx = Object.entries(reactCounts).map(([e, n]) => (n > 1 ? `${e}×${n}` : e)).join(" ");
+  if (rx) lines.push(rx);
+  if (it.tier) lines.push(`tier: **${it.tier}**`);
   if (it.note) lines.push(`📝 ${String(it.note).slice(0, 300)}`);
   for (const n of pnotes || []) lines.push(`💬 ${n.author}: ${String(n.note).slice(0, 200)}`);
   if (!link && it.kind !== "text") lines.push("_(file wasn't stored, only the info)_");

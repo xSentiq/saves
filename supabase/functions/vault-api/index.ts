@@ -8,6 +8,11 @@
 //   note   { token, id, note, scope? } → { ok }        (scope "shared" = note both can edit,
 //                                                      "personal" = your own note, read-only for others)
 //   tags   { token, id, tags }  → { ok, tags }         (replace the item's tags, max 12, lowercase)
+//   react  { token, id, emoji } → { ok, on }           (toggle your emoji reaction on an item)
+//   tier   { token, id, tier, pos } → { ok }           (tier list: "S".."F" or null = unranked; pos = order)
+//   maintain { token }          → { processed, remaining, changed }
+//                                 (background job the site calls: stores copies of expiring Discord links,
+//                                  looks up YouTube channel names for music detection)
 //   remove { token, id }        → { ok }               (deletes item + file)
 //   import { token, channel_id, messages: [{id, timestamp, content, attachments: [url]}] }
 //                               → { saved, already, problems, storage }
@@ -16,7 +21,7 @@
 // Env (Supabase → Edge Functions → Secrets):
 //   VAULT_PASSCODE    – the shared passcode. Changing it logs everyone out.
 //   VAULT_NAMES       – comma-separated names to pick from, default "Sentiq,furfyl"
-//   DISCORD_BOT_TOKEN – only for import: refreshes expired Discord attachment links
+//   DISCORD_BOT_TOKEN – refreshes expired Discord attachment links (import + rescuing old links)
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 
@@ -100,7 +105,9 @@ async function storageUsed(): Promise<number> {
 // ---------- bulk import helpers (same rules as mreow's "Save to Vault") ----------
 
 const URL_RE = /https?:\/\/[^\s<>()"']+[^\s<>()"'.,;:!?\]]/gi;
-const DISCORD_CDN = /^https:\/\/(cdn\.discordapp\.com|media\.discordapp\.net)\/attachments\/\d+\/(\d+)\/([^?#]+)/;
+// Discord attachment links (these expire ~24 h after Discord hands them out). Group 3 = attachment id, 4 = file name.
+const DISCORD_CDN = /^https:\/\/(cdn\.discordapp\.com|media\.discordapp\.net)\/(ephemeral-)?attachments\/\d+\/(\d+)\/([^?#]+)/i;
+const isExpiringUrl = (u: unknown) => typeof u === "string" && DISCORD_CDN.test(u);
 
 function youtubeId(u: string): string | null {
   try {
@@ -171,11 +178,16 @@ async function importBatch(who: string, channelId: string, msgs: ImportMsg[]) {
     for (const raw of m.attachments || []) {
       const hit = String(raw).match(DISCORD_CDN);
       if (!hit) continue;
-      const name = decodeURIComponent(hit[3]);
-      plans.push({ key: `${m.id}:att:${hit[2]}`, msg: m, att: { url: raw.split("?")[0], id: hit[2], name } });
+      const name = decodeURIComponent(hit[4]);
+      plans.push({ key: `${m.id}:att:${hit[3]}`, msg: m, att: { url: raw.split("?")[0], id: hit[3], name } });
     }
     for (const u of new Set(String(m.content || "").match(URL_RE) || [])) {
-      if (DISCORD_CDN.test(u)) continue; // pasted attachment links are handled as attachments above
+      const hit = u.match(DISCORD_CDN);
+      if (hit) {
+        // a pasted Discord file link expires, so store the file itself (same key mreow would use)
+        plans.push({ key: `${m.id}:url:${u}`, msg: m, att: { url: u.split("?")[0], id: hit[3], name: decodeURIComponent(hit[4]) } });
+        continue;
+      }
       plans.push({ key: `${m.id}:url:${u}`, msg: m, url: u });
     }
   }
@@ -252,6 +264,118 @@ async function importBatch(who: string, channelId: string, msgs: ImportMsg[]) {
   return { saved, already: plans.length - todo.length, problems, storage: used };
 }
 
+// ---------- keeping expiring Discord links + YouTube info (the "maintain" action) ----------
+
+async function downloadToStorage(link: string, path: string, maxBytes = MAX_FILE) {
+  const res = await fetch(link);
+  if (!res.ok) throw new Error(`download ${res.status}`);
+  const len = Number(res.headers.get("content-length") || 0);
+  if (len > maxBytes) { await res.body?.cancel(); throw new Error("over 50 MB"); }
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  if (bytes.length > maxBytes) throw new Error("over 50 MB");
+  if ((await storageUsed()) + bytes.length > STORAGE_STOP) throw new Error("storage almost full");
+  const ct = res.headers.get("content-type") || "application/octet-stream";
+  const { error } = await supabase.storage.from(BUCKET).upload(path, bytes, { contentType: ct, upsert: true });
+  if (error) throw error;
+  return { ct, size: bytes.length };
+}
+
+// Fresh, working link for a Discord attachment URL: refresh it with the bot token if we have one,
+// otherwise try the signed copy we might still have (only works until it expires).
+async function freshDiscordLink(original: string, signedFallback: string | null): Promise<string> {
+  const base = original.split("?")[0];
+  if (Deno.env.get("DISCORD_BOT_TOKEN")) {
+    const fresh = await refreshUrls([base]);
+    const link = fresh[base] || Object.values(fresh)[0];
+    if (link) return link;
+    throw new Error("Discord has no fresh link (file deleted?)");
+  }
+  for (const cand of [original, signedFallback]) {
+    if (cand && /[?&]ex=([0-9a-f]+)/i.test(cand)) {
+      const ex = parseInt(cand.match(/[?&]ex=([0-9a-f]+)/i)![1], 16) * 1000;
+      if (ex > Date.now() + 60_000) return cand; // still valid
+    }
+  }
+  throw new Error("needs bot token: the Discord link already expired. Add DISCORD_BOT_TOKEN in Supabase.");
+}
+
+// deno-lint-ignore no-explicit-any
+async function rescueItem(it: any): Promise<boolean> {
+  const update: Record<string, unknown> = {};
+  try {
+    // 1) the item itself is a Discord file link → store the file and turn the item into a real file
+    if (isExpiringUrl(it.url) && !it.storage_path) {
+      const hit = it.url.match(DISCORD_CDN)!;
+      const name = decodeURIComponent(hit[4]);
+      const link = await freshDiscordLink(it.url, isExpiringUrl(it.thumbnail_url) ? it.thumbnail_url : null);
+      const path = `rescued/${it.id}-${safeName(name)}`;
+      const { ct, size } = await downloadToStorage(link, path);
+      Object.assign(update, {
+        storage_path: path, file_name: name, content_type: ct, size_bytes: size, kind: kindFor(ct, name),
+        rescued_from: it.url.split("?")[0], url: null, title: it.title, site_name: null,
+        thumbnail_url: null,
+      });
+    }
+    // 2) only the thumbnail points at Discord → store a copy of the thumbnail
+    else if (isExpiringUrl(it.thumbnail_url) && !it.thumb_path) {
+      const hit = it.thumbnail_url.match(DISCORD_CDN)!;
+      const link = await freshDiscordLink(it.thumbnail_url, it.thumbnail_url);
+      const path = `thumbs/${it.id}-${safeName(decodeURIComponent(hit[4]))}`;
+      await downloadToStorage(link, path, 10 * 1024 * 1024);
+      Object.assign(update, { thumb_path: path });
+    }
+    update.rescue_error = null;
+    update.rescue_checked_at = new Date().toISOString();
+    await supabase.from("vault_items").update(update).eq("id", it.id);
+    return Object.keys(update).length > 2;
+  } catch (e) {
+    await supabase.from("vault_items").update({
+      rescue_error: String((e as Error).message).slice(0, 300),
+      rescue_checked_at: new Date().toISOString(),
+    }).eq("id", it.id);
+    return false;
+  }
+}
+
+// deno-lint-ignore no-explicit-any
+async function enrichYoutube(it: any): Promise<boolean> {
+  let channel: string | null = null, title: string | null = null;
+  try {
+    const res = await withTimeout(fetch(`https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(it.url)}`), 5000);
+    if (res && res.ok) {
+      const j = await res.json();
+      channel = j.author_name ? String(j.author_name).slice(0, 120) : null;
+      title = j.title ? String(j.title).slice(0, 300) : null;
+    }
+  } catch { /* video gone or private: just mark it as checked */ }
+  const update: Record<string, unknown> = { enriched_at: new Date().toISOString() };
+  if (channel) update.channel = channel;
+  if (title && !it.title) update.title = title;
+  await supabase.from("vault_items").update(update).eq("id", it.id);
+  return Boolean(channel || (title && !it.title));
+}
+
+async function maintain() {
+  const hasBot = Boolean(Deno.env.get("DISCORD_BOT_TOKEN"));
+  const { data: q } = await supabase.rpc("vault_maintenance_queue", { max_items: 4, has_bot_token: hasBot });
+  const ids: string[] = q?.ids || [];
+  let changed = 0;
+  if (ids.length) {
+    const { data: rows } = await supabase.from("vault_items").select("*").in("id", ids);
+    for (const it of rows || []) {
+      const needsRescue = (isExpiringUrl(it.url) && !it.storage_path) || (isExpiringUrl(it.thumbnail_url) && !it.thumb_path);
+      if (needsRescue && await rescueItem(it)) changed++;
+      if (it.kind === "youtube" && !it.enriched_at && await enrichYoutube(it)) changed++;
+    }
+  }
+  const { data: after } = await supabase.rpc("vault_maintenance_queue", { max_items: 0, has_bot_token: hasBot });
+  return { processed: ids.length, remaining: after?.total ?? 0, changed };
+}
+
+const TIERS = ["S", "A", "B", "C", "F"];
+// one emoji (incl. skin tones / ZWJ sequences / flags), nothing else
+const EMOJI_RE = /^(?:\p{Extended_Pictographic}|\p{Regional_Indicator}|\u{FE0F}|\u{200D}|\p{Emoji_Modifier}|\u{20E3}|[#*0-9])+$/u;
+
 function clientIp(req: Request) {
   return (req.headers.get("x-forwarded-for") || "").split(",")[0].trim() ||
     req.headers.get("cf-connecting-ip") || "unknown";
@@ -292,10 +416,11 @@ Deno.serve(async (req) => {
   if (!who) return json({ error: "locked" }, 401);
 
   if (action === "list") {
-    const [{ data: items, error }, { data: ratings }, { data: pnotes }] = await Promise.all([
+    const [{ data: items, error }, { data: ratings }, { data: pnotes }, { data: reacts }] = await Promise.all([
       supabase.from("vault_items").select("*").order("created_at", { ascending: false }).limit(2000),
       supabase.from("vault_ratings").select("item_id, rater, score"),
       supabase.from("vault_personal_notes").select("item_id, author, note, updated_at"),
+      supabase.from("vault_reactions").select("item_id, person, emoji, created_at").order("created_at"),
     ]);
     if (error) return json({ error: error.message }, 500);
 
@@ -304,7 +429,11 @@ Deno.serve(async (req) => {
     const notesByItem: Record<string, Record<string, { note: string; updated_at: string }>> = {};
     for (const n of pnotes || []) (notesByItem[n.item_id] ||= {})[n.author] = { note: n.note, updated_at: n.updated_at };
 
-    const paths = (items || []).map((i) => i.storage_path).filter(Boolean) as string[];
+    // reactions per item: { "🔥": ["Sentiq", "furfyl"], ... } in the order they were first used
+    const reactByItem: Record<string, Record<string, string[]>> = {};
+    for (const r of reacts || []) ((reactByItem[r.item_id] ||= {})[r.emoji] ||= []).push(r.person);
+
+    const paths = (items || []).flatMap((i) => [i.storage_path, i.thumb_path]).filter(Boolean) as string[];
     const urls: Record<string, string> = {};
     for (let k = 0; k < paths.length; k += 500) {
       const { data } = await supabase.storage.from(BUCKET).createSignedUrls(paths.slice(k, k + 500), 6 * 3600);
@@ -318,8 +447,11 @@ Deno.serve(async (req) => {
       items: (items || []).map((i) => ({
         ...i,
         file_url: i.storage_path ? urls[i.storage_path] ?? null : null,
+        // our stored copy wins over a Discord thumbnail link that may have expired
+        thumbnail_url: i.thumb_path ? urls[i.thumb_path] ?? null : (isExpiringUrl(i.thumbnail_url) ? null : i.thumbnail_url),
         ratings: byItem[i.id] || {},
         personal_notes: notesByItem[i.id] || {},
+        reactions: reactByItem[i.id] || {},
       })),
     });
   }
@@ -337,8 +469,39 @@ Deno.serve(async (req) => {
     }
   }
 
+  if (action === "maintain") {
+    try { return json(await maintain()); }
+    catch (e) { return json({ error: (e as Error).message }, 500); }
+  }
+
   const id = String(body.id || "");
   if (!/^[0-9a-f-]{36}$/i.test(id)) return json({ error: "bad id" }, 400);
+
+  if (action === "react") {
+    const emoji = String(body.emoji || "").trim();
+    if (!emoji || emoji.length > 16 || !EMOJI_RE.test(emoji)) return json({ error: "not an emoji" }, 400);
+    const { data: existing } = await supabase.from("vault_reactions").select("emoji")
+      .eq("item_id", id).eq("person", who).eq("emoji", emoji).maybeSingle();
+    if (existing) {
+      const { error } = await supabase.from("vault_reactions").delete().eq("item_id", id).eq("person", who).eq("emoji", emoji);
+      return error ? json({ error: error.message }, 500) : json({ ok: true, on: false });
+    }
+    const { count } = await supabase.from("vault_reactions").select("emoji", { count: "exact", head: true })
+      .eq("item_id", id).eq("person", who);
+    if ((count ?? 0) >= 20) return json({ error: "that's a lot of reactions already" }, 400);
+    const { error } = await supabase.from("vault_reactions").insert({ item_id: id, person: who, emoji });
+    return error ? json({ error: error.message }, 500) : json({ ok: true, on: true });
+  }
+
+  if (action === "tier") {
+    const tier = body.tier === null || body.tier === "" ? null : String(body.tier).toUpperCase();
+    if (tier !== null && !TIERS.includes(tier)) return json({ error: "tier must be S, A, B, C, F or empty" }, 400);
+    const pos = Number(body.pos);
+    const { error } = await supabase.from("vault_items")
+      .update({ tier, tier_pos: tier === null ? null : (Number.isFinite(pos) ? pos : Date.now()) })
+      .eq("id", id);
+    return error ? json({ error: error.message }, 500) : json({ ok: true });
+  }
 
   if (action === "rate") {
     const score = Number(body.score);
@@ -384,8 +547,9 @@ Deno.serve(async (req) => {
   }
 
   if (action === "remove") {
-    const { data } = await supabase.from("vault_items").select("storage_path").eq("id", id).single();
-    if (data?.storage_path) await supabase.storage.from(BUCKET).remove([data.storage_path]);
+    const { data } = await supabase.from("vault_items").select("storage_path, thumb_path").eq("id", id).single();
+    const files = [data?.storage_path, data?.thumb_path].filter(Boolean) as string[];
+    if (files.length) await supabase.storage.from(BUCKET).remove(files);
     const { error } = await supabase.from("vault_items").delete().eq("id", id);
     return error ? json({ error: error.message }, 500) : json({ ok: true });
   }

@@ -13,6 +13,8 @@
 //   maintain { token }          → { processed, remaining, changed }
 //                                 (background job the site calls: stores copies of expiring Discord links,
 //                                  looks up YouTube channel names for music detection)
+//   ytmatch { token, id, url }  → { ok, yt_match, yt_match_title }
+//                                 (Spotify link: pick which YouTube video plays it; empty url = search again)
 //   remove { token, id }        → { ok }               (deletes item + file)
 //   import { token, channel_id, messages: [{id, timestamp, content, attachments: [url]}] }
 //                               → { saved, already, problems, storage }
@@ -22,6 +24,7 @@
 //   VAULT_PASSCODE    – the shared passcode. Changing it logs everyone out.
 //   VAULT_NAMES       – comma-separated names to pick from, default "Sentiq,furfyl"
 //   DISCORD_BOT_TOKEN – refreshes expired Discord attachment links (import + rescuing old links)
+//   YOUTUBE_API_KEY   – YouTube Data API key: finds the YouTube version of saved Spotify songs
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 
@@ -401,6 +404,74 @@ async function enrichLink(it: any): Promise<boolean> {
   return Object.keys(update).length > 1;
 }
 
+// ---------- Spotify → YouTube match (so the music player can play Spotify links via YouTube) ----------
+
+const norm = (t: string) => t.toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
+  .replace(/\(.*?\)|\[.*?\]/g, " ").replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+const BAD_WORDS = ["live", "cover", "reaction", "karaoke", "instrumental", "sped up", "slowed", "nightcore", "8d",
+  "remix", "1 hour", "10 hours", "extended", "tutorial", "piano", "guitar", "lesson", "shorts", "edit"];
+
+// artist + song title from the Spotify track page (og:description is "Artist · Song · 2024")
+async function spotifyInfo(url: string): Promise<{ artist: string | null; title: string | null }> {
+  try {
+    const res = await withTimeout(fetch(url, { headers: { "User-Agent": "Mozilla/5.0 (compatible; PeakVault/1.0)", "Accept": "text/html" } }), 6000);
+    if (!res || !res.ok) return { artist: null, title: null };
+    const html = (await res.text()).slice(0, 400_000);
+    const meta = (prop: string) => {
+      const m = html.match(new RegExp(`<meta[^>]+(?:property|name)=["']${prop}["'][^>]*content=["']([^"']+)["']`, "i"))
+        || html.match(new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]*(?:property|name)=["']${prop}["']`, "i"));
+      return m ? decodeHtml(m[1]).trim() : null;
+    };
+    const desc = meta("og:description") || "";
+    let artist = meta("music:musician_description") || (desc.includes(" · ") ? desc.split(" · ")[0].trim() : null);
+    if (!artist) artist = html.match(/<title>[^<]*? by ([^<|]+?) \| Spotify<\/title>/i)?.[1]?.trim() || null;
+    return { artist, title: meta("og:title") };
+  } catch { return { artist: null, title: null }; }
+}
+
+// deno-lint-ignore no-explicit-any
+async function matchSpotify(it: any): Promise<boolean> {
+  const key = Deno.env.get("YOUTUBE_API_KEY");
+  if (!key) return false;
+  let artist: string | null = it.channel, title: string | null = it.title;
+  if (!artist || !title) { const info = await spotifyInfo(it.url); artist ||= info.artist; title ||= info.title; }
+  const now = new Date().toISOString();
+  if (!title) { await supabase.from("vault_items").update({ yt_match_checked_at: now }).eq("id", it.id); return false; }
+
+  const q = artist ? `${artist} ${title}` : title;
+  const res = await fetch(`https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=8&videoEmbeddable=true&q=${encodeURIComponent(q)}&key=${encodeURIComponent(key)}`);
+  if (!res.ok) {
+    // quota used up / bad key / YouTube down: try this one again in about a day (the queue retries after 7 days,
+    // so mark it as checked 6 days ago)
+    const retry = new Date(Date.now() - 6 * 864e5).toISOString();
+    await supabase.from("vault_items").update({ yt_match_checked_at: retry }).eq("id", it.id);
+    return false;
+  }
+  const j = await res.json();
+  const nt = norm(title), na = artist ? norm(artist) : "";
+  // deno-lint-ignore no-explicit-any
+  const scored = (j.items || []).map((v: any, idx: number) => {
+    const rawTitle = decodeHtml(v.snippet?.title || "");
+    const vt = norm(rawTitle), ch = norm(decodeHtml(v.snippet?.channelTitle || ""));
+    const vraw = rawTitle.toLowerCase(), traw = title!.toLowerCase(); // keep (brackets) for "live", "remix" etc.
+    let score = -idx * 0.3;
+    if (/ topic$/.test(ch)) score += 5;                       // "Artist - Topic" = the official audio upload
+    if (na && (ch.includes(na) || na.includes(ch.replace(/ topic$/, "")))) score += 3;
+    if (nt && vt.includes(nt)) score += 4;
+    if (/official (audio|music video|video)/.test(vraw)) score += 2;
+    for (const w of BAD_WORDS) if (new RegExp(`\\b${w}\\b`).test(vraw) && !traw.includes(w)) score -= 4;
+    return { id: v.id?.videoId as string, title: decodeHtml(v.snippet?.title || ""), score };
+  }).filter((c: { id: string }) => c.id).sort((a: { score: number }, b: { score: number }) => b.score - a.score);
+
+  const best = scored[0];
+  const update: Record<string, unknown> = { yt_match_checked_at: now };
+  if (artist && !it.channel) update.channel = artist.slice(0, 120);
+  if (title && !it.title) update.title = title.slice(0, 300);
+  if (best && best.score >= 1) { update.yt_match = best.id; update.yt_match_title = best.title.slice(0, 300); }
+  await supabase.from("vault_items").update(update).eq("id", it.id);
+  return Boolean(update.yt_match);
+}
+
 async function maintain() {
   const hasBot = Boolean(Deno.env.get("DISCORD_BOT_TOKEN"));
   const { data: q } = await supabase.rpc("vault_maintenance_queue", { max_items: 4, has_bot_token: hasBot });
@@ -415,8 +486,24 @@ async function maintain() {
       if (it.kind === "link" && !it.enriched_at && !isExpiringUrl(it.url) && (!it.title || !it.thumbnail_url) && await enrichLink(it)) changed++;
     }
   }
+  // Spotify songs → YouTube match (2 per call, each search costs YouTube API quota)
+  const hasYt = Boolean(Deno.env.get("YOUTUBE_API_KEY"));
+  let ytProcessed = 0, ytRemaining = 0;
+  if (hasYt) {
+    const { data: yq } = await supabase.rpc("vault_youtube_match_queue", { max_items: 2 });
+    const yids: string[] = yq?.ids || [];
+    if (yids.length) {
+      const { data: rows } = await supabase.from("vault_items").select("*").in("id", yids);
+      for (const it of rows || []) { ytProcessed++; if (await matchSpotify(it)) changed++; }
+    }
+    const { data: yafter } = await supabase.rpc("vault_youtube_match_queue", { max_items: 0 });
+    ytRemaining = yafter?.total ?? 0;
+  }
   const { data: after } = await supabase.rpc("vault_maintenance_queue", { max_items: 0, has_bot_token: hasBot });
-  return { processed: ids.length, remaining: after?.total ?? 0, changed, bot_token: hasBot };
+  return {
+    processed: ids.length + ytProcessed, remaining: (after?.total ?? 0) + ytRemaining, changed,
+    bot_token: hasBot, youtube_key: hasYt,
+  };
 }
 
 const TIERS = ["S", "A", "B", "C", "F"];
@@ -591,6 +678,22 @@ Deno.serve(async (req) => {
       .filter(Boolean))].slice(0, 12);
     const { error } = await supabase.from("vault_items").update({ tags }).eq("id", id);
     return error ? json({ error: error.message }, 500) : json({ ok: true, tags });
+  }
+
+  if (action === "ytmatch") {
+    // pick the YouTube video that plays for a Spotify link (or clear it to search again)
+    const raw = String(body.url || "").trim();
+    if (!raw) {
+      const { error } = await supabase.from("vault_items")
+        .update({ yt_match: null, yt_match_title: null, yt_match_manual: false, yt_match_checked_at: null }).eq("id", id);
+      return error ? json({ error: error.message }, 500) : json({ ok: true, yt_match: null, yt_match_title: null });
+    }
+    const vid = youtubeId(raw) || (/^[\w-]{11}$/.test(raw) ? raw : null);
+    if (!vid) return json({ error: "that's not a YouTube link" }, 400);
+    const vtitle = await youtubeTitle(`https://www.youtube.com/watch?v=${vid}`);
+    const { error } = await supabase.from("vault_items")
+      .update({ yt_match: vid, yt_match_title: vtitle, yt_match_manual: true, yt_match_checked_at: new Date().toISOString() }).eq("id", id);
+    return error ? json({ error: error.message }, 500) : json({ ok: true, yt_match: vid, yt_match_title: vtitle });
   }
 
   if (action === "remove") {

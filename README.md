@@ -52,6 +52,7 @@ In Supabase, open the project, then **Edge Functions → Secrets**, and add:
 | `VAULT_NAMES` | `Sentiq,furfyl` (names on the login screen; 1st = 🐱, 2nd = 🐶) |
 | `VAULT_SITE_URL` | optional, defaults to `https://vault.faggot.world/` |
 | `DISCORD_BOT_TOKEN` | the bot token, only needed for **Import** (it refreshes expired file links from old DMs) |
+| `YOUTUBE_API_KEY` | YouTube Data API v3 key, finds the YouTube version of saved Spotify songs (console.cloud.google.com → enable *YouTube Data API v3* → Credentials → Create API key) |
 
 Don't know your Discord ID? Leave `ALLOWED_DISCORD_USER_IDS` empty for now. The first time you use **Save to Vault**, mreow replies with your ID.
 
@@ -83,7 +84,8 @@ Open the install link from **Installation** in the Developer Portal and choose *
 * **Storage meter**: shows how much of the 1 GB is used, split by type. Turns yellow at 70% and red at 90%.
 * **Reactions**: click **☺+** on a card to react with an emoji (presets or any emoji you type). Click a reaction to add or remove yours; hover to see who reacted. `/vault random` shows them too.
 * **Tier list**: switch the view to **Tier list** and drag saves into S / A / B / C / F (on phones: hold a moment, then drag). Click a tile to open it. Keyboard: focus a tile and press S, A, B, C, F, or U to unrank. The tier list is shared between both of you.
-* **Music player**: the 🎵 button plays all the music in the vault at random (audio files, YouTube songs and Spotify tracks; Spotify plays full songs if you are logged in to Spotify in that browser, otherwise 30 s previews), with shuffle, previous / next and lock-screen controls. Music is detected automatically: audio files (not voice messages), YouTube Music links, "Artist - Topic" channels, and titles like "OST", "remix", "lyrics" or "Artist - Song". Tag something `#music` to add it or `#notmusic` to leave it out. Cards with music get a **▶ play** button.
+* **Music player**: the 🎵 button plays all the music in the vault at random (audio files, YouTube songs and Spotify links), with shuffle, previous / next and lock-screen controls. Music is detected automatically: audio files (not voice messages), YouTube Music links, "Artist - Topic" channels, and titles like "OST", "remix", "lyrics" or "Artist - Song". Tag something `#music` to add it or `#notmusic` to leave it out. Cards with music get a **▶ play** button.
+* **Spotify links**: play through the matching song on YouTube (no Spotify login, no 30 s previews). The vault finds the YouTube version automatically (prefers the official "Artist - Topic" upload, avoids live / cover / sped up versions). Each Spotify card shows "▶ plays as …"; click **change** to paste a different YouTube link, or leave it empty to search again. Needs the `YOUTUBE_API_KEY` secret (free, about 100 songs a day).
 * **Expiring Discord links**: Discord file links (`cdn.discordapp.com/attachments/...`) stop working after about a day. When mreow saves a message with one, it stores the file itself right away. Older saved links get rescued in the background whenever the site is open (needs `DISCORD_BOT_TOKEN` once a link has already expired). Normal links like YouTube or websites are left alone.
 * **Import**: on the site, click **Import** and pick your Discord data package (Settings → Data & Privacy → Request all of my data → Messages). Choose your DM and it saves every file and link from it. The package only has your own messages, so each of you imports your own. Anything already saved is skipped, so it's safe to run again. Needs the `DISCORD_BOT_TOKEN` secret.
 

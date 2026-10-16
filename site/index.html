@@ -113,6 +113,16 @@
     padding: 5px 8px; color: var(--ink); font: inherit; font-size: 13px; outline: none; }
   .react-pop input:focus { border-color: var(--gold); }
 
+  /* Spotify link → YouTube match */
+  .ytm { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; font-size: 12px; color: var(--muted);
+    background: var(--soft); border-radius: 8px; padding: 6px 9px; }
+  .ytm-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .ytm a { color: var(--ink); }
+  .ytm-edit { background: none; border: 1px solid var(--line); border-radius: 7px; color: var(--muted); font-size: 11px; padding: 2px 8px; cursor: pointer; }
+  .ytm-edit:hover { color: var(--ink); border-color: var(--muted); }
+  .ytm-input { flex: 1; min-width: 160px; background: var(--input); border: 1px solid var(--gold); border-radius: 7px; padding: 4px 8px;
+    color: var(--ink); font: inherit; font-size: 12px; outline: none; }
+
   /* expiring Discord link not stored yet */
   .warn { margin-top: 8px; font-size: 12px; color: var(--gold-text); background: color-mix(in srgb, var(--gold) 9%, transparent);
     border-radius: 8px; padding: 5px 9px; }
@@ -122,10 +132,6 @@
     background: var(--panel); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px #000a; padding: 10px; }
   .pl-video { display: none; border-radius: 12px; overflow: hidden; background: #000; aspect-ratio: 16 / 9; min-height: 200px; margin-bottom: 8px; }
   .player.is-yt .pl-video { display: block; }
-  .pl-sp { display: none; border-radius: 12px; overflow: hidden; margin-bottom: 8px; height: 152px; }
-  .player.is-sp .pl-sp { display: block; }
-  .pl-sp iframe { width: 100%; height: 152px; border: 0; display: block; }
-  .player.is-sp .pl-cover { display: none; }
   .pl-video iframe, #plYt { width: 100%; height: 100%; display: block; border: 0; }
   .pl-row { display: flex; gap: 10px; align-items: center; }
   .pl-cover { flex: 0 0 auto; width: 46px; height: 46px; border-radius: 10px; overflow: hidden; border: 0; padding: 0; cursor: pointer;
@@ -429,7 +435,6 @@
 <!-- ========== music mini player ========== -->
 <div id="player" class="player hidden" role="region" aria-label="Music player">
   <div class="pl-video"><div id="plYt"></div></div>
-  <div class="pl-sp"><div id="plSp"></div></div>
   <div class="pl-row">
     <button type="button" class="pl-cover" id="plCover" title="show it in the vault" aria-label="show the current song in the vault"><span>🎵</span></button>
     <div class="pl-info">
@@ -821,6 +826,7 @@
       <div class="body">
         ${title}${msg}
         ${notRescuedYet(i) ? `<div class="warn">⚠️ Discord link, not stored permanently yet${i.rescue_error ? `: ${esc(i.rescue_error)}` : " (working on it)"}</div>` : ""}
+        ${spotifyUri(i.url) && i.kind === "link" ? ytMatchRow(i) : ""}
         ${tagsRow(i)}
         ${reactionsRow(i)}
         ${notesBlock(i)}
@@ -844,6 +850,7 @@
     wireText();
     wireReactions();
     wirePlayButtons();
+    wireYtMatch();
     document.querySelectorAll("[data-rate]").forEach((box) => {
       box.querySelectorAll("button").forEach((b) => b.onclick = async () => {
         const it = items.find((x) => x.id === box.dataset.rate);
@@ -1280,6 +1287,40 @@
     if (changed) await load(true, true);
   }
 
+  // ---------- Spotify links → which YouTube video plays them ----------
+  function ytMatchRow(i) {
+    const body = i.yt_match
+      ? `▶ plays as <a href="https://www.youtube.com/watch?v=${esc(i.yt_match)}" target="_blank" rel="noopener noreferrer">${esc(i.yt_match_title || "YouTube video")}</a>${i.yt_match_manual ? " <span class=\"site\">(picked by hand)</span>" : ""}`
+      : i.yt_match_checked_at
+        ? `no YouTube version found`
+        : `🔎 looking for it on YouTube…`;
+    return `<div class="ytm" data-ytm="${i.id}"><span class="ytm-text">${body}</span>
+      <button type="button" class="ytm-edit" data-ytm-edit="${i.id}">${i.yt_match ? "change" : "set"}</button></div>`;
+  }
+
+  function wireYtMatch() {
+    document.querySelectorAll("[data-ytm-edit]").forEach((b) => b.onclick = () => {
+      const it = items.find((x) => x.id === b.dataset.ytmEdit);
+      const row = b.closest(".ytm");
+      row.innerHTML = `<input class="ytm-input" placeholder="paste a YouTube link (empty = search again)" aria-label="YouTube link for this song">
+        <button type="button" class="ytm-edit" data-act="save">save</button><button type="button" class="ytm-edit" data-act="cancel">cancel</button>`;
+      const inp = row.querySelector("input");
+      inp.focus();
+      const save = async () => {
+        try {
+          const r = await call("ytmatch", { id: it.id, url: inp.value.trim() });
+          Object.assign(it, { yt_match: r.yt_match, yt_match_title: r.yt_match_title, yt_match_manual: Boolean(r.yt_match), yt_match_checked_at: r.yt_match ? new Date().toISOString() : null });
+          render();
+          toast(r.yt_match ? "saved, plays as that video now" : "searching again in the background");
+          if (!r.yt_match) runMaintenance();
+        } catch (e) { toast(e.message, true); }
+      };
+      row.querySelector('[data-act="save"]').onclick = save;
+      row.querySelector('[data-act="cancel"]').onclick = () => render();
+      inp.onkeydown = (e) => { if (e.key === "Enter") save(); if (e.key === "Escape") render(); };
+    });
+  }
+
   // ---------- music player ----------
   const MUSIC_TAGS = ["music", "song", "songs", "ost", "soundtrack", "album", "playlist", "banger"];
   const MUSIC_RE = /\b(official\s+(audio|music\s+video|video|visuali[sz]er|lyric\s+video)|lyrics?|ost|soundtrack|remix|instrumental|nightcore|slowed|sped\s*up|reverb|phonk|album|full\s+ep|cover|feat\.|ft\.|prod\.|music|song|theme|bgm|vgm|extended\s+mix|8d\s+audio|bass\s*boosted)\b/i;
@@ -1295,7 +1336,7 @@
   function isMusic(i) {
     const tags = i.tags || [];
     if (tags.includes("notmusic")) return false;
-    if (i.kind === "link" && spotifyUri(i.url)) return true;
+    if (i.kind === "link" && spotifyUri(i.url)) return Boolean(i.yt_match); // plays via its YouTube match
     if (tags.some((t) => MUSIC_TAGS.includes(t))) return (i.kind === "youtube" && ytId(i.url)) || (i.kind === "audio" && i.file_url) || (i.kind === "video" && i.file_url);
     if (i.kind === "audio") return Boolean(i.file_url) && !/^voice-message/i.test(i.file_name || "");
     if (i.kind === "youtube" && ytId(i.url)) {
@@ -1307,9 +1348,9 @@
     return false;
   }
 
-  const player = { on: false, queue: [], idx: -1, shuffle: true, cur: null, yt: null, ytReady: null, tick: null,
-    sp: null, spReady: null, spState: { pos: 0, dur: 0, paused: true, ended: false } };
-  const isSp = (i) => i?.kind === "link" && Boolean(spotifyUri(i.url));
+  const player = { on: false, queue: [], idx: -1, shuffle: true, cur: null, yt: null, ytReady: null, tick: null };
+  // the YouTube video that plays for an item: YouTube links themselves, or a Spotify link's YouTube match
+  const ytVid = (i) => !i ? null : i.kind === "youtube" ? ytId(i.url) : (spotifyUri(i.url) && i.yt_match) || null;
   const shuffled = (a) => { a = [...a]; for (let k = a.length - 1; k > 0; k--) { const j = Math.floor(Math.random() * (k + 1)); [a[k], a[j]] = [a[j], a[k]]; } return a; };
   const trackTitle = (i) => i.title || String(i.file_name || "untitled").replace(/\.[a-z0-9]{2,4}$/i, "") || "untitled";
   const trackArtist = (i) => (i.channel ? i.channel.replace(/ - Topic$/i, "") : "") || (i.author_name ? `from ${i.author_name}` : "");
@@ -1342,7 +1383,6 @@
     $("player").classList.add("hidden");
     $("plAudio").pause();
     try { player.yt?.stopVideo(); } catch { /* not loaded */ }
-    try { player.sp?.pause(); } catch { /* not loaded */ }
     clearInterval(player.tick);
     player.cur = null;
     markPlayingCard();
@@ -1374,34 +1414,6 @@
     return player.ytReady;
   }
 
-  // Spotify's embed player (full songs when logged in to Spotify in this browser, otherwise 30 s previews)
-  function ensureSpotify(uri) {
-    if (player.spReady) return player.spReady;
-    player.spReady = new Promise((ok, bad) => {
-      window.onSpotifyIframeApiReady = (IFrameAPI) => {
-        IFrameAPI.createController($("plSp"), { uri, width: "100%", height: 152 }, (ctrl) => {
-          player.sp = ctrl;
-          ctrl.addListener("playback_update", (e) => {
-            const d = e.data || {};
-            const st = player.spState;
-            const nearEnd = st.dur > 0 && st.pos > st.dur - 1500;
-            st.pos = d.position || 0; st.dur = d.duration || 0; st.paused = Boolean(d.isPaused);
-            if (isSp(player.cur)) setPlaying(!st.paused);
-            // finished: it jumps back to the start and pauses, or reaches the end
-            const ended = (st.dur > 0 && st.pos >= st.dur - 300) || (nearEnd && st.paused && st.pos < 1000);
-            if (ended && !st.ended && isSp(player.cur)) { st.ended = true; playIndex(player.idx + 1); }
-          });
-          ok();
-        });
-      };
-      const s = document.createElement("script");
-      s.src = "https://open.spotify.com/embed/iframe-api/v1";
-      s.onerror = () => { player.spReady = null; bad(new Error("couldn't load Spotify")); };
-      document.head.appendChild(s);
-    });
-    return player.spReady;
-  }
-
   async function playIndex(k) {
     if (!player.on) return;
     if (!player.queue.length) buildQueue();
@@ -1416,33 +1428,19 @@
     $("plSub").textContent = trackArtist(it);
     $("plCount").textContent = `${k + 1}/${player.queue.length}`;
     markPlayingCard();
-    const yt = it.kind === "youtube";
-    const sp = isSp(it);
+    const vid = ytVid(it);
+    const yt = Boolean(vid);
     $("player").classList.toggle("is-yt", yt);
-    $("player").classList.toggle("is-sp", sp);
-    if (!sp) try { player.sp?.pause(); } catch { /* not loaded */ }
     const cover = trackCover(it);
     $("plCover").innerHTML = cover ? `<img src="${esc(cover)}" alt="">` : `<span>🎵</span>`;
-    if (sp) {
-      $("plAudio").pause();
-      try { player.yt?.stopVideo(); } catch { /* not loaded */ }
-      try {
-        const uri = spotifyUri(it.url);
-        const fresh = !player.sp;
-        await ensureSpotify(uri);
-        player.spState = { pos: 0, dur: 0, paused: true, ended: false };
-        if (!fresh) player.sp.loadUri(uri);
-        player.sp.play();
-      } catch (e) { toast(e.message, true); return playIndex(k + 1); }
-    } else if (yt) {
+    if (yt) {
       $("plAudio").pause();
       try {
         await ensureYT();
-        player.yt.loadVideoById(ytId(it.url));
+        player.yt.loadVideoById(vid);
       } catch (e) { toast(e.message, true); return playIndex(k + 1); }
     } else {
       try { player.yt?.stopVideo(); } catch { /* not loaded */ }
-      try { player.sp?.pause(); } catch { /* not loaded */ }
       const a = $("plAudio");
       a.src = it.file_url;
       try { await a.play(); } catch { setPlaying(false); }
@@ -1459,8 +1457,7 @@
   function togglePlay() {
     const it = player.cur;
     if (!it) return;
-    if (isSp(it) && player.sp) { player.sp.togglePlay(); return; }
-    if (it.kind === "youtube" && player.yt) {
+    if (ytVid(it) && player.yt) {
       const st = player.yt.getPlayerState?.();
       if (st === YT.PlayerState.PLAYING) player.yt.pauseVideo(); else player.yt.playVideo();
     } else {
@@ -1472,8 +1469,7 @@
   function currentTimes() {
     const it = player.cur;
     if (!it) return [0, 0];
-    if (isSp(it)) return [player.spState.pos / 1000, player.spState.dur / 1000];
-    if (it.kind === "youtube" && player.yt?.getCurrentTime) return [player.yt.getCurrentTime() || 0, player.yt.getDuration() || 0];
+    if (ytVid(it) && player.yt?.getCurrentTime) return [player.yt.getCurrentTime() || 0, player.yt.getDuration() || 0];
     const a = $("plAudio");
     return [a.currentTime || 0, a.duration || 0];
   }
@@ -1488,8 +1484,7 @@
   function seekTo(frac) {
     const [, d] = currentTimes();
     if (!d) return;
-    if (isSp(player.cur)) player.sp?.seek(frac * d);
-    else if (player.cur?.kind === "youtube") player.yt?.seekTo(frac * d, true); else $("plAudio").currentTime = frac * d;
+    if (ytVid(player.cur)) player.yt?.seekTo(frac * d, true); else $("plAudio").currentTime = frac * d;
   }
 
   function prevTrack() {
